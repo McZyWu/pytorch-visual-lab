@@ -29,8 +29,11 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(browser, /PyTorch 官方定义/);
   assert.match(browser, /公式变量/);
   assert.match(browser, /katex\.renderToString/);
+  assert.match(browser, /位置计算小窗口/);
+  assert.match(browser, /inputCoord/);
+  assert.match(browser, /Conv1d 输出位置/);
   assert.match(browser, /自动播放/);
-  assert.match(browser, /窗口\(\$\{i\},\$\{j\}\)/);
+  assert.match(browser, /输出 Y\[h=\$\{i\},w=\$\{j\}\]/);
   assert.match(browser, /最终结果/);
   assert.doesNotMatch(browser, /output_contract|接口生命周期|返回值以官方签名为准/);
   assert.ok(JSON.parse(index).length > 9000);

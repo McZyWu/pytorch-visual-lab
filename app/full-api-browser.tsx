@@ -14,6 +14,8 @@ type Variable = { name: string; meaning: string; sample: string };
 type Simulation = { mode: "数值计算" | "梯度计算" | "张量变换" | "对象与状态"; title: string; value: unknown; trace: string[] };
 type TensorItem = { key: string; label: string; value: unknown };
 type FormulaSpec = { latex: string; spoken: string; explanation: string; symbols: Array<{ symbol: string; meaning: string }> };
+type PositionTerm = { inputKey: string; inputIndex: number; inputCoord: string; inputValue: number; parameterKey?: string; parameterIndex?: number; parameterCoord?: string; parameterValue?: number; result: number; operator: string };
+type PositionDetail = { title: string; outputCoord: string; outputValue: number | boolean; terms: PositionTerm[]; bias?: number; rule: string; aggregation?: "sum" | "max" | "mean" | "direct" };
 
 const entries = apiIndex as ApiEntry[];
 const groupCounts = Object.entries(entries.reduce<Record<string, number>>((all, item) => {
@@ -242,15 +244,15 @@ function visualShape(value: unknown) {
   return shapeOf(value);
 }
 
-function TensorMatrix({ values, columns, highlights = [] }: { values: Array<number | boolean>; columns: number; highlights?: number[] }) {
+function TensorMatrix({ values, columns, highlights = [], colorHighlights = {} }: { values: Array<number | boolean>; columns: number; highlights?: number[]; colorHighlights?: Record<number, number> }) {
   const visibleColumns = Math.max(1, Math.min(columns, 8));
   return <div className="tensor-matrix" style={{ gridTemplateColumns: `repeat(${visibleColumns}, minmax(31px, 1fr))` }}>
-    {values.slice(0, 64).map((value, index) => <span className={highlights.includes(index) ? "is-active" : ""} key={`${index}-${String(value)}`}>{cellText(value)}</span>)}
+    {values.slice(0, 64).map((value, index) => <span className={`${highlights.includes(index) ? "is-active" : ""} ${colorHighlights[index] !== undefined ? `term-color-${colorHighlights[index] % 8}` : ""}`} key={`${index}-${String(value)}`}>{cellText(value)}</span>)}
     {values.length > 64 && <span className="tensor-more">+{values.length - 64}</span>}
   </div>;
 }
 
-function TensorVisual({ item, highlights = [] }: { item: TensorItem; highlights?: number[] }) {
+function TensorVisual({ item, highlights = [], colorHighlights = {} }: { item: TensorItem; highlights?: number[]; colorHighlights?: Record<number, number> }) {
   const [activePlane, setActivePlane] = useState(0);
   const shape = visualShape(item.value), values = visualLeaves(item.value);
   if (!shape.length) return <article className="tensor-visual tensor-visual--scalar"><header><b>{item.label}</b><code>scalar</code></header><div className={highlights.length ? "tensor-scalar is-active" : "tensor-scalar"}>{cellText(values[0])}</div></article>;
@@ -262,6 +264,7 @@ function TensorVisual({ item, highlights = [] }: { item: TensorItem; highlights?
   const visiblePlaneCount = Math.min(planeCount, 12), safePlane = Math.min(activePlane, visiblePlaneCount - 1);
   const selectedStart = safePlane * planeSize;
   const selectedHighlights = highlights.filter((index) => index >= selectedStart && index < selectedStart + planeSize).map((index) => index - selectedStart);
+  const selectedColorHighlights = Object.fromEntries(Object.entries(colorHighlights).filter(([index]) => Number(index) >= selectedStart && Number(index) < selectedStart + planeSize).map(([index, color]) => [Number(index) - selectedStart, color]));
   return <article className={`tensor-visual ${isCuboid ? "tensor-visual--cuboid" : ""}`}>
     <header><b>{item.label}</b><code>shape=[{shape.join(", ")}]</code></header>
     {isCuboid ? <div className="tensor-cuboid">
@@ -276,11 +279,63 @@ function TensorVisual({ item, highlights = [] }: { item: TensorItem; highlights?
       </div>
       <div className="tensor-layer-detail">
         <div className="tensor-layer-detail__head"><strong>层 {safePlane + 1} / {planeCount}</strong><span>完整展开 · {rows}×{columns}</span></div>
-        <div className="tensor-plane tensor-plane--selected"><TensorMatrix values={values.slice(selectedStart, selectedStart + planeSize)} columns={columns} highlights={selectedHighlights} /></div>
+        <div className="tensor-plane tensor-plane--selected"><TensorMatrix values={values.slice(selectedStart, selectedStart + planeSize)} columns={columns} highlights={selectedHighlights} colorHighlights={selectedColorHighlights} /></div>
       </div>
       {planeCount > visiblePlaneCount && <span className="tensor-depth-more">当前展示前 {visiblePlaneCount} 层，共 {planeCount} 层</span>}
-    </div> : <TensorMatrix values={values} columns={columns} highlights={highlights} />}
+    </div> : <TensorMatrix values={values} columns={columns} highlights={highlights} colorHighlights={colorHighlights} />}
   </article>;
+}
+
+function positionDetail(entry: ApiEntry, spec: Record<string, unknown>, sim: Simulation, step: number): PositionDetail | null {
+  const family=familyOf(entry), n=cleanLeaf(entry);
+  if (family === "convolution" && n.includes("1d")) {
+    const xRaw=spec.input as number[][]|number[], kRaw=spec.kernel as number[][]|number[], x=Array.isArray(xRaw?.[0])?xRaw as number[][]:[xRaw as number[]], k=Array.isArray(kRaw?.[0])?kRaw as number[][]:[kRaw as number[]];
+    const length=x[0]?.length??0,kernelSize=k[0]?.length??0,stride=Number(spec.stride??1),padding=Number(spec.padding??0),dilation=Number(spec.dilation??1),t=step;
+    const terms:PositionTerm[]=[];x.forEach((channel,c)=>k[c].forEach((weight,u)=>{const position=t*stride+u*dilation-padding,inputValue=position>=0&&position<length?Number(channel[position]):0;terms.push({inputKey:"input",inputIndex:c*length+Math.max(0,position),inputCoord:`X[n=0, c=${c}, t=${position}]`,inputValue,parameterKey:"kernel",parameterIndex:c*kernelSize+u,parameterCoord:`W[o=0, c=${c}, u=${u}]`,parameterValue:Number(weight),result:Number(weight)*inputValue,operator:"×"});}));
+    return {title:`Conv1d 输出位置 t=${t}`,outputCoord:`Y[n=0, o=0, t=${t}]`,outputValue:Number((sim.value as number[])?.[t]),terms,bias:Number(spec.bias??0),rule:`窗口起点 = ${t}×stride(${stride}) − padding(${padding})；核内位置还要乘 dilation(${dilation})`,aggregation:"sum"};
+  }
+  if (family === "convolution") {
+    const rawX=spec.input,rawK=spec.kernel,x=shapeOf(rawX).length===3?rawX as number[][][]:[rawX as number[][]],k=shapeOf(rawK).length===3?rawK as number[][][]:[rawK as number[][]],height=x[0].length,width=x[0][0].length,kH=k[0].length,kW=k[0][0].length,stride=Number(spec.stride??1),out=sim.value as number[][],outCols=out[0]?.length??1,i=Math.floor(step/outCols),j=step%outCols;
+    const terms:PositionTerm[]=[];k.forEach((plane,c)=>plane.forEach((row,u)=>row.forEach((weight,v)=>{const inputRow=i*stride+u,inputCol=j*stride+v,inputValue=Number(x[c][inputRow][inputCol]);terms.push({inputKey:"input",inputIndex:c*height*width+inputRow*width+inputCol,inputCoord:`X[n=0, c=${c}, h=${inputRow}, w=${inputCol}]`,inputValue,parameterKey:"kernel",parameterIndex:c*kH*kW+u*kW+v,parameterCoord:`W[o=0, c=${c}, u=${u}, v=${v}]`,parameterValue:Number(weight),result:Number(weight)*inputValue,operator:"×"});})));
+    return {title:`Conv2d 输出位置 (h=${i}, w=${j})`,outputCoord:`Y[n=0, o=0, h=${i}, w=${j}]`,outputValue:Number(out[i]?.[j]),terms,bias:Number(spec.bias??0),rule:`输入窗口左上角 = (${i}×stride, ${j}×stride) = (${i*stride}, ${j*stride})`,aggregation:"sum"};
+  }
+  if (family === "pooling") {
+    const x=spec.input as number[][],size=Number(spec.kernel_size??2),stride=Number(spec.stride??size),out=sim.value as number[][],outCols=out[0]?.length??1,i=Math.floor(step/outCols),j=step%outCols;
+    const terms:PositionTerm[]=[];for(let u=0;u<size;u++)for(let v=0;v<size;v++){const row=i*stride+u,col=j*stride+v,value=Number(x[row][col]);terms.push({inputKey:"input",inputIndex:row*x[0].length+col,inputCoord:`X[n=0, c=0, h=${row}, w=${col}]`,inputValue:value,result:value,operator:"读取"});}
+    const aggregation=cleanLeaf(entry).includes("avg")?"mean":"max";return {title:`${aggregation==="mean"?"平均":"最大"}池化输出位置 (h=${i}, w=${j})`,outputCoord:`Y[n=0, c=0, h=${i}, w=${j}]`,outputValue:Number(out[i]?.[j]),terms,rule:`窗口左上角 = (${i}×${stride}, ${j}×${stride})，窗口大小 = ${size}×${size}`,aggregation};
+  }
+  if (family === "matmul") {
+    const a=spec.input as number[][],b=spec.other as number[][],out=sim.value as number[][],cols=b[0].length,i=Math.floor(step/cols),j=step%cols;
+    const terms=a[i].map((value,k)=>({inputKey:"input",inputIndex:i*a[0].length+k,inputCoord:`A[i=${i}, k=${k}]`,inputValue:Number(value),parameterKey:"other",parameterIndex:k*cols+j,parameterCoord:`B[k=${k}, j=${j}]`,parameterValue:Number(b[k][j]),result:Number(value)*Number(b[k][j]),operator:"×" as const}));
+    return {title:`矩阵乘法输出位置 (${i}, ${j})`,outputCoord:`C[i=${i}, j=${j}]`,outputValue:Number(out[i][j]),terms,rule:`固定 A 的第 ${i} 行和 B 的第 ${j} 列，按 k 对齐后逐项相乘并求和`,aggregation:"sum"};
+  }
+  if (family === "linear") {
+    const input=(spec.input as number[]).map(Number),weight=spec.weight as number[][],bias=(spec.bias as number[]).map(Number),output=sim.value as number[],j=step%weight.length;
+    const terms=input.map((value,i)=>({inputKey:"input",inputIndex:i,inputCoord:`x[i=${i}]`,inputValue:value,parameterKey:"weight",parameterIndex:j*input.length+i,parameterCoord:`W[j=${j}, i=${i}]`,parameterValue:Number(weight[j][i]),result:value*Number(weight[j][i]),operator:"×" as const}));
+    return {title:`Linear 输出神经元 j=${j}`,outputCoord:`y[j=${j}]`,outputValue:Number(output[j]),terms,bias:bias[j],rule:`取权重矩阵第 ${j} 行，与输入向量逐项相乘并求和`,aggregation:"sum"};
+  }
+  if (["activation","unary","binary","comparison","selection"].includes(family)) {
+    const inputValues=visualLeaves(spec.input),otherValues=visualLeaves(spec.other),outputValues=visualLeaves(sim.value),index=step%Math.max(1,inputValues.length),other=otherValues.length===1?otherValues[0]:otherValues[index];
+    const operators:Record<string,string>={add:"+",sub:"−",mul:"×",multiply:"×",div:"÷",divide:"÷",pow:"幂",remainder:"取余",eq:"=",ne:"≠",gt:">",ge:"≥",lt:"<",le:"≤"};
+    return {title:`逐元素输出位置 i=${index}`,outputCoord:`Y[i=${index}]`,outputValue:outputValues[index],terms:[{inputKey:"input",inputIndex:index,inputCoord:`X[i=${index}]`,inputValue:Number(inputValues[index]),parameterKey:other!==undefined?"other":undefined,parameterIndex:otherValues.length>1?index:0,parameterCoord:other!==undefined?`B[i=${otherValues.length>1?index:"broadcast"}]`:undefined,parameterValue:other!==undefined?Number(other):undefined,result:Number(outputValues[index]),operator:operators[n]??entry.leaf}],rule:"逐元素算子只读取相同位置的输入；标量 other 会广播到全部位置",aggregation:"direct"};
+  }
+  return null;
+}
+
+function termColorMap(detail: PositionDetail | null, key: string) {
+  if (!detail) return {};
+  const map:Record<number,number>={};detail.terms.forEach((term,index)=>{if(term.inputKey===key)map[term.inputIndex]=index;if(term.parameterKey===key&&term.parameterIndex!==undefined)map[term.parameterIndex]=index;});return map;
+}
+
+function PositionCalculationDialog({ detail, onClose }: { detail: PositionDetail; onClose: () => void }) {
+  const sum=detail.terms.reduce((total,term)=>total+Number(term.result),0),aggregate=detail.aggregation==="max"?Math.max(...detail.terms.map(term=>term.result)):detail.aggregation==="mean"?sum/detail.terms.length:detail.aggregation==="direct"?detail.terms[0]?.result:sum,result=typeof detail.outputValue==="number"?cellText(detail.outputValue):String(detail.outputValue);
+  useEffect(()=>{const close=(event:KeyboardEvent)=>{if(event.key==="Escape")onClose();};window.addEventListener("keydown",close);return()=>window.removeEventListener("keydown",close);},[onClose]);
+  return <div className="position-dialog-backdrop" role="presentation" onMouseDown={(event)=>{if(event.target===event.currentTarget)onClose();}}><section className="position-dialog" role="dialog" aria-modal="true" aria-label="当前输出位置计算明细">
+    <header><div><span>POSITION CALCULATION</span><h4>{detail.title}</h4></div><button type="button" onClick={onClose} aria-label="关闭计算明细">×</button></header>
+    <div className="position-rule"><b>坐标怎么来的</b><p>{detail.rule}</p></div>
+    <div className="position-terms">{detail.terms.map((term,index)=><article className={`term-color-${index%8}`} key={`${term.inputCoord}-${index}`}><span>第 {index+1} 项 · 同色格子相互对应</span><div><code>{term.inputCoord}</code><strong>{cellText(term.inputValue)}</strong></div>{term.parameterCoord&&<div><code>{term.parameterCoord}</code><strong>{cellText(term.parameterValue??0)}</strong></div>}<p>{term.parameterValue!==undefined?<>{cellText(term.inputValue)} {term.operator} {cellText(term.parameterValue)} = <b>{cellText(term.result)}</b></>:<>读取该位置 = <b>{cellText(term.result)}</b></>}</p></article>)}</div>
+    <div className="position-total"><code>{detail.outputCoord}</code><div><span>{detail.aggregation==="max"?"窗口取最大值":detail.aggregation==="mean"?"窗口求和后除以元素数":detail.aggregation==="direct"?"应用当前逐元素函数":"各项乘积求和"}</span><b>{detail.aggregation==="max"?`max(${detail.terms.map(term=>cellText(term.result)).join(", ")}) = ${cellText(aggregate)}`:detail.aggregation==="mean"?`(${detail.terms.map(term=>cellText(term.result)).join(" + ")}) ÷ ${detail.terms.length} = ${cellText(aggregate)}`:detail.aggregation==="direct"?cellText(aggregate):`${detail.terms.map((term)=>cellText(term.result)).join(" + ")} = ${cellText(aggregate)}`}</b></div>{detail.bias!==undefined&&<div><span>加偏置</span><b>{cellText(aggregate)} + {cellText(detail.bias)} = {result}</b></div>}<strong>最终输出 = {result}</strong></div>
+  </section></div>;
 }
 
 function highlightCells(entry: ApiEntry, spec: Record<string, unknown>, sim: Simulation, step: number, item: TensorItem, side: "input" | "output") {
@@ -296,6 +351,11 @@ function highlightCells(entry: ApiEntry, spec: Record<string, unknown>, sim: Sim
   if (family === "convolution" || family === "pooling") {
     const source = spec.input as unknown, sourceShape = shapeOf(source), output = outputTensors(sim.value)[0]?.value;
     const outputShape = shapeOf(output), outCols = outputShape.at(-1) ?? 1, row = Math.floor(step / outCols), col = step % outCols;
+    if (family === "convolution" && cleanLeaf(entry).includes("1d")) {
+      if (side === "output") return [step % count];
+      if (item.key === "kernel") return Array.from({length:count},(_,index)=>index);
+      if (item.key === "input") { const length=sourceShape.at(-1)??1,kernelSize=shapeOf(spec.kernel).at(-1)??1,stride=Number(spec.stride??1),padding=Number(spec.padding??0),dilation=Number(spec.dilation??1),channels=sourceShape.at(-2)??1;return Array.from({length:channels},(_,c)=>Array.from({length:kernelSize},(__,u)=>c*length+step*stride+u*dilation-padding)).flat().filter(index=>index>=0&&index<count); }
+    }
     if (side === "output") return [row * outCols + col];
     if (item.key === "kernel") return Array.from({ length: count }, (_, index) => index);
     if (item.key === "input") {
@@ -318,8 +378,9 @@ function highlightCells(entry: ApiEntry, spec: Record<string, unknown>, sim: Sim
 function CalculationVisualizer({ entry, source, sim }: { entry: ApiEntry; source: string; sim: Simulation }) {
   const parsed = useMemo(() => { try { return JSON.parse(source) as Record<string, unknown>; } catch { return {}; } }, [source]);
   const inputs = inputTensors(parsed), outputs = outputTensors(sim.value);
-  const [step, setStep] = useState(0), [playing, setPlaying] = useState(false);
+  const [step, setStep] = useState(0), [playing, setPlaying] = useState(false), [detailOpen, setDetailOpen] = useState(false);
   const total = Math.max(1, sim.trace.length), safeStep = Math.min(step, total - 1);
+  const detail=positionDetail(entry,parsed,sim,safeStep);
   useEffect(() => {
     if (!playing || total < 2) return;
     const timer = window.setInterval(() => setStep((current) => current >= total - 1 ? 0 : current + 1), 1100);
@@ -329,15 +390,17 @@ function CalculationVisualizer({ entry, source, sim }: { entry: ApiEntry; source
   return <section className="calculation-viz" aria-label="张量计算过程可视化">
     <div className="calculation-viz__head"><div><span>INTERACTIVE TENSOR FLOW</span><h4>输入 → 逐步计算 → 输出</h4></div><p>橙色单元格是第 {safeStep + 1} 步正在参与计算的位置</p></div>
     <div className="tensor-flow">
-      <div className="tensor-side"><small>输入张量</small>{inputs.map((item) => <TensorVisual key={item.key} item={item} highlights={highlightCells(entry, parsed, sim, safeStep, item, "input")} />)}</div>
+      <div className="tensor-side"><small>输入张量</small>{inputs.map((item) => <TensorVisual key={item.key} item={item} highlights={highlightCells(entry, parsed, sim, safeStep, item, "input")} colorHighlights={termColorMap(detail,item.key)} />)}</div>
       <div className="operator-node"><span>{entry.leaf}</span><MathExpression latex={formulaSpecOf(entry).latex} spoken={formulaSpecOf(entry).spoken} /><i>→</i></div>
       <div className="tensor-side"><small>输出张量</small>{outputs.map((item, index) => <TensorVisual key={`${item.key}-${index}`} item={item} highlights={highlightCells(entry, parsed, sim, safeStep, item, "output")} />)}</div>
     </div>
     <div className="process-stepper">
       <div className="stepper-controls"><button type="button" onClick={() => setStep(Math.max(0, safeStep - 1))} disabled={safeStep === 0}>← 上一步</button><button type="button" className={playing ? "is-playing" : ""} onClick={() => setPlaying((value) => !value)} disabled={total < 2}>{playing ? "暂停" : "自动播放"}</button><button type="button" onClick={() => setStep(Math.min(total - 1, safeStep + 1))} disabled={safeStep === total - 1}>下一步 →</button></div>
       <div className="stepper-copy"><span>{safeStep + 1} / {total}</span><p>{sim.trace[safeStep] ?? "输入经过当前算子后直接得到右侧输出。"}</p></div>
+      {detail&&<button type="button" className="open-position-detail" onClick={()=>{setPlaying(false);setDetailOpen(true);}}>⊞ 打开第 {safeStep+1} 步的位置计算小窗口</button>}
       {total > 1 && <input aria-label="选择计算步骤" type="range" min="0" max={total - 1} value={safeStep} onChange={(event) => { setStep(Number(event.target.value)); setPlaying(false); }} />}
     </div>
+    {detailOpen&&detail&&<PositionCalculationDialog detail={detail} onClose={()=>setDetailOpen(false)} />}
   </section>;
 }
 
@@ -351,7 +414,7 @@ function defaultSpec(entry: ApiEntry) {
     bce: { prediction: [0.9, 0.2, 0.7], target: [1, 0, 1] },
     softmax: { input: [[1, 2, 3], [2, 1, 0]], dim: -1 },
     activation: { input: [-v[0], -0.5, 0, v[1] / 3, v[2]] },
-    convolution: { input: [[[v[0], 2, 0], [0, v[1], 3], [2, 1, v[2]]], [[1, 0, 2], [2, 1, 0], [0, 3, 1]]], kernel: [[[1, 0], [0, -1]], [[0, 1], [1, 0]]], stride: 1, bias: 0 },
+    convolution: n.includes("1d") ? { input: [[1, 2, 0, 7, 1, 0, 2], [1, 0, 2, 1, 3, 1, 0]], kernel: [[1, 0, 0, -1], [0, 1, 1, 0]], stride: 1, padding: 0, dilation: 1, bias: 0 } : { input: [[[v[0], 2, 0], [0, v[1], 3], [2, 1, v[2]]], [[1, 0, 2], [2, 1, 0], [0, 3, 1]]], kernel: [[[1, 0], [0, -1]], [[0, 1], [1, 0]]], stride: 1, bias: 0 },
     pooling: { input: [[1, 5, 2, 4], [3, 2, 7, 1], [0, 6, 3, 8], [4, 1, 2, 5]], kernel_size: 2, stride: 2 },
     linear: { input: [2, -1, 3], weight: [[0.5, 1, -1], [2, 0, 0.5]], bias: [0.1, -0.2] },
     matmul: { input: [[v[0], 2, v[1]], [4, v[2], 6]], other: [[1, 2], [0, v[0]], [2, 0]] },
@@ -411,7 +474,8 @@ function simulate(entry: ApiEntry, source: string): Simulation {
   else if (family === "split") { const vals=flat(input),size=Math.ceil(vals.length/Number(spec.sections));value=Array.from({length:Number(spec.sections)},(_,i)=>vals.slice(i*size,(i+1)*size));mode="张量变换";trace=[`输入共有 ${vals.length} 个元素`,`分成 ${spec.sections} 组，每组约 ${size} 个`,`保持原顺序得到 ${JSON.stringify(value)}`];}
   else if (family === "matmul") { const a=input as number[][],b=spec.other as number[][];value=a.map(row=>b[0].map((_:number,j:number)=>row.reduce((s:number,x:number,k:number)=>s+x*b[k][j],0)));trace=[];a.forEach((row,i)=>b[0].forEach((_:number,j:number)=>trace.push(`C[${i},${j}] = ${row.map((x,k)=>`${x}×${b[k][j]}`).join(" + ")} = ${(value as number[][])[i][j]}`)));}
   else if (family === "linear") { value=spec.weight.map((w:number[],j:number)=>w.reduce((s,x,i)=>s+x*spec.input[i],spec.bias[j]));trace=spec.weight.map((w:number[],j:number)=>`y${j} = ${w.map((x,i)=>`${x}×${spec.input[i]}`).join(" + ")} + ${spec.bias[j]} = ${value[j]}`);}
-  else if (family === "convolution") { const rawX=spec.input,rawK=spec.kernel,x=shapeOf(rawX).length===3?rawX:[rawX],k=shapeOf(rawK).length===3?rawK:[rawK],stride=Number(spec.stride??1),oh=Math.floor((x[0].length-k[0].length)/stride)+1,ow=Math.floor((x[0][0].length-k[0][0].length)/stride)+1;value=Array.from({length:oh},(_,i)=>Array.from({length:ow},(_,j)=>k.reduce((channelSum:number,plane:number[][],c:number)=>channelSum+plane.reduce((s:number,row:number[],u:number)=>s+row.reduce((q,z,v)=>q+z*x[c][i*stride+u][j*stride+v],0),0),Number(spec.bias))));trace=[];for(let i=0;i<oh;i++)for(let j=0;j<ow;j++){const terms=k.flatMap((plane:number[][],c:number)=>plane.flatMap((row:number[],u:number)=>row.map((z:number,v:number)=>`${z}×${x[c][i*stride+u][j*stride+v]}`)));trace.push(`窗口(${i},${j})：${terms.join(" + ")} = ${value[i][j]}`);}}
+  else if (family === "convolution" && n.includes("1d")) { const rawX=spec.input,rawK=spec.kernel,x=Array.isArray(rawX[0])?rawX:[rawX],k=Array.isArray(rawK[0])?rawK:[rawK],stride=Number(spec.stride??1),padding=Number(spec.padding??0),dilation=Number(spec.dilation??1),length=x[0].length,kernelSize=k[0].length,outLength=Math.floor((length+2*padding-dilation*(kernelSize-1)-1)/stride)+1;value=Array.from({length:outLength},(_,t)=>k.reduce((sum:number,weights:number[],c:number)=>sum+weights.reduce((channel:number,weight:number,u:number)=>{const position=t*stride+u*dilation-padding;return channel+weight*(position>=0&&position<length?x[c][position]:0);},0),Number(spec.bias??0)));trace=(value as number[]).map((result,t)=>{const terms=k.flatMap((weights:number[],c:number)=>weights.map((weight:number,u:number)=>{const position=t*stride+u*dilation-padding;return `${weight}×X[c=${c},t=${position}]=${position>=0&&position<length?x[c][position]:0}`;}));return `输出 Y[t=${t}]：${terms.join(" + ")} + bias(${spec.bias??0}) = ${result}`;});}
+  else if (family === "convolution") { const rawX=spec.input,rawK=spec.kernel,x=shapeOf(rawX).length===3?rawX:[rawX],k=shapeOf(rawK).length===3?rawK:[rawK],stride=Number(spec.stride??1),oh=Math.floor((x[0].length-k[0].length)/stride)+1,ow=Math.floor((x[0][0].length-k[0][0].length)/stride)+1;value=Array.from({length:oh},(_,i)=>Array.from({length:ow},(_,j)=>k.reduce((channelSum:number,plane:number[][],c:number)=>channelSum+plane.reduce((s:number,row:number[],u:number)=>s+row.reduce((q,z,v)=>q+z*x[c][i*stride+u][j*stride+v],0),0),Number(spec.bias))));trace=[];for(let i=0;i<oh;i++)for(let j=0;j<ow;j++){const terms=k.flatMap((plane:number[][],c:number)=>plane.flatMap((row:number[],u:number)=>row.map((z:number,v:number)=>`${z}×X[c=${c},h=${i*stride+u},w=${j*stride+v}]=${x[c][i*stride+u][j*stride+v]}`)));trace.push(`输出 Y[h=${i},w=${j}]：${terms.join(" + ")} + bias(${spec.bias??0}) = ${value[i][j]}`);}}
   else if (family === "pooling") { const x=spec.input,size=Number(spec.kernel_size),out=[] as number[][];for(let i=0;i<x.length;i+=Number(spec.stride)){const row=[];for(let j=0;j<x[0].length;j+=Number(spec.stride)){const window=x.slice(i,i+size).flatMap((r:number[])=>r.slice(j,j+size));row.push(n.includes("avg")?window.reduce((a:number,b:number)=>a+b,0)/window.length:Math.max(...window));trace.push(`窗口 [${window}] → ${n.includes("avg")?"平均":"最大"}值 ${row.at(-1)}`);}out.push(row);}value=out;}
   else if (family === "sorting") { const sorted=[...spec.input].sort((a:number,b:number)=>spec.descending?b-a:a-b);value=n.includes("topk")?{values:sorted.slice(0,spec.k),indices:sorted.slice(0,spec.k).map((x:number)=>spec.input.indexOf(x))}:sorted;trace=[`原序列 [${spec.input}]`,`${spec.descending?"降序":"升序"}比较并重排 → [${sorted}]`,n.includes("topk")?`取前 ${spec.k} 个并返回原索引`:"返回排序结果"];}
   else if (family === "counting") { const counts=spec.input.reduce((a:Record<string,number>,x:number)=>(a[x]=(a[x]??0)+1,a),{});value=n.includes("unique")?Object.keys(counts).map(Number):counts;trace=Object.entries(counts).map(([x,c])=>`数值 ${x} 出现 ${c} 次`);}
