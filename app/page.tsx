@@ -426,7 +426,7 @@ export default function Home() {
         <div>
           <p className="eyebrow">PYTORCH · INTERACTIVE ATLAS</p>
           <h1>不漏掉任何 API，<em>也不止于目录。</em></h1>
-          <p>全量同步 PyTorch 2.13 官方文档接口；高频函数再用中文公式、变量解析和 Tensor 实验把每一步计算讲透。</p>
+          <p>全量同步 PyTorch 2.13 官方文档接口；每一个 API 都有中文公式、变量解析、场景 Example 和输入输出实验。</p>
         </div>
         <div className="hero__demo" aria-label="张量变换示意">
           <div><small>输入 A · [2, 2]</small><Matrix value={[[1, 2], [3, 4]]} /></div>
@@ -437,7 +437,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="coverage-banner" aria-label="接口覆盖说明"><b>9,066</b><span>个官方文档 API 已收录</span><i>全量索引</i><i>中文用途</i><i>官方原文直达</i><i>高频函数可运行</i></section>
+      <section className="coverage-banner" aria-label="接口覆盖说明"><b>9,066</b><span>个官方 API 全部可进入深度实验</span><i>中文解析</i><i>公式变量</i><i>场景 Example</i><i>输入输出预演</i></section>
 
       <section className="category-strip" aria-label="深度课程分类">
         {categories.map((item) => <button key={item} className={category === item ? "selected" : ""} onClick={() => setCategory(item)}>{item}{item !== "全部" && <sup>{lessons.filter((l) => l.category === item).length}</sup>}</button>)}
