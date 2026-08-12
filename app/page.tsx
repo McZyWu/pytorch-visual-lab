@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import FullApiBrowser from "./full-api-browser";
 
 type Category = "张量基础" | "形状变换" | "数学运算" | "神经网络" | "损失函数";
 
@@ -417,15 +418,15 @@ export default function Home() {
           <span className="brand__mark">T</span>
           <span><b>TorchScope</b><small>看见每一步计算</small></span>
         </a>
-        <nav aria-label="主导航"><a className="active" href="#learn">函数图谱</a><a href="#lab">实验台</a><a href="#path">学习路径</a></nav>
+        <nav aria-label="主导航"><a className="active" href="#learn">深度实验</a><a href="#all-apis">全部 API</a><a href="#path">学习路径</a></nav>
         <div className="progress-chip" aria-label={`学习进度 ${progress}%`}><span>{completed.length}/{lessons.length}</span><i><b style={{ width: `${progress}%` }} /></i></div>
       </header>
 
       <section className="hero" id="top">
         <div>
           <p className="eyebrow">PYTORCH · INTERACTIVE ATLAS</p>
-          <h1>别只读 API，<em>亲手跑一遍。</em></h1>
-          <p>从公式里的每个变量，到 Tensor 流过函数后的每个数值。选一个函数，改一组输入，立刻理解它。</p>
+          <h1>不漏掉任何 API，<em>也不止于目录。</em></h1>
+          <p>全量同步 PyTorch 2.13 官方文档接口；高频函数再用中文公式、变量解析和 Tensor 实验把每一步计算讲透。</p>
         </div>
         <div className="hero__demo" aria-label="张量变换示意">
           <div><small>输入 A · [2, 2]</small><Matrix value={[[1, 2], [3, 4]]} /></div>
@@ -436,13 +437,15 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="category-strip" aria-label="函数分类">
+      <section className="coverage-banner" aria-label="接口覆盖说明"><b>9,066</b><span>个官方文档 API 已收录</span><i>全量索引</i><i>中文用途</i><i>官方原文直达</i><i>高频函数可运行</i></section>
+
+      <section className="category-strip" aria-label="深度课程分类">
         {categories.map((item) => <button key={item} className={category === item ? "selected" : ""} onClick={() => setCategory(item)}>{item}{item !== "全部" && <sup>{lessons.filter((l) => l.category === item).length}</sup>}</button>)}
       </section>
 
       <section className="workspace" id="learn">
         <aside className="catalog">
-          <div className="catalog__head"><div><small>FUNCTION INDEX</small><h2>函数索引</h2></div><span>{filtered.length}</span></div>
+          <div className="catalog__head"><div><small>DEEP-DIVE LESSONS</small><h2>重点实验</h2></div><span>{filtered.length}</span></div>
           <label className="search"><span>⌕</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索函数或用途…" aria-label="搜索函数" /></label>
           <div className="lesson-list">
             {filtered.map((item, index) => (
@@ -488,6 +491,8 @@ export default function Home() {
           <div className="try-row"><span>快速试验</span><button onClick={() => { const v = lesson.id === "relu" ? "[-5, -1, 0, 2, 8]" : lesson.input; setInputText(v); execute(lesson, v, secondaryText, axis); }}>示例输入</button><button onClick={() => { setInputText(lesson.input); setSecondaryText(lesson.secondary ?? ""); setAxis(lesson.axis ?? 0); execute(lesson, lesson.input, lesson.secondary ?? "", lesson.axis ?? 0); }}>重置</button></div>
         </aside>
       </section>
+
+      <FullApiBrowser />
 
       <section className="path" id="path">
         <div><p className="eyebrow">RECOMMENDED PATH</p><h2>从一个 Tensor，走到完整训练循环</h2><p>推荐按数据 → 形状 → 计算 → 网络 → 损失的顺序学习。掌握一个，就点亮一个节点。</p></div>
