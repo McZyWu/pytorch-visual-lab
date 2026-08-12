@@ -215,6 +215,7 @@ function TensorMatrix({ values, columns, highlights = [] }: { values: Array<numb
 }
 
 function TensorVisual({ item, highlights = [] }: { item: TensorItem; highlights?: number[] }) {
+  const [activePlane, setActivePlane] = useState(0);
   const shape = visualShape(item.value), values = visualLeaves(item.value);
   if (!shape.length) return <article className="tensor-visual tensor-visual--scalar"><header><b>{item.label}</b><code>scalar</code></header><div className={highlights.length ? "tensor-scalar is-active" : "tensor-scalar"}>{cellText(values[0])}</div></article>;
   const isCuboid = shape.length >= 3;
@@ -222,17 +223,26 @@ function TensorVisual({ item, highlights = [] }: { item: TensorItem; highlights?
   const columns = shape.at(-1) ?? shape[0] ?? 1;
   const planeSize = rows * columns;
   const planeCount = Math.max(1, Math.ceil(values.length / planeSize));
+  const visiblePlaneCount = Math.min(planeCount, 12), safePlane = Math.min(activePlane, visiblePlaneCount - 1);
+  const selectedStart = safePlane * planeSize;
+  const selectedHighlights = highlights.filter((index) => index >= selectedStart && index < selectedStart + planeSize).map((index) => index - selectedStart);
   return <article className={`tensor-visual ${isCuboid ? "tensor-visual--cuboid" : ""}`}>
     <header><b>{item.label}</b><code>shape=[{shape.join(", ")}]</code></header>
-    {isCuboid ? <div className="tensor-cuboid" style={{ height: `${Math.min(planeCount, 5) * 10 + Math.min(rows, 8) * 34 + 18}px` }}>
-      {Array.from({ length: Math.min(planeCount, 5) }, (_, plane) => {
-        const start = plane * planeSize;
-        const localHighlights = highlights.filter((index) => index >= start && index < start + planeSize).map((index) => index - start);
-        return <div className="tensor-plane" style={{ transform: `translate(${plane * 11}px, ${-plane * 9}px)`, zIndex: plane + 1 }} key={plane}>
-          <em>层 {plane}</em><TensorMatrix values={values.slice(start, start + planeSize)} columns={columns} highlights={localHighlights} />
-        </div>;
-      })}
-      {planeCount > 5 && <span className="tensor-depth-more">还有 {planeCount - 5} 层</span>}
+    {isCuboid ? <div className="tensor-cuboid">
+      <div className="tensor-layer-picker" aria-label={`${item.label}切换查看层`}>
+        {Array.from({ length: visiblePlaneCount }, (_, plane) => {
+          const start = plane * planeSize, preview = values.slice(start, start + Math.min(4, planeSize));
+          const hasHighlight = highlights.some((index) => index >= start && index < start + planeSize);
+          return <button type="button" className={`${safePlane === plane ? "is-selected" : ""} ${hasHighlight ? "has-highlight" : ""}`} aria-pressed={safePlane === plane} onClick={() => setActivePlane(plane)} key={plane}>
+            <span>层 {plane + 1}</span><small>{preview.map(cellText).join(" · ")}{planeSize > 4 ? " …" : ""}</small>
+          </button>;
+        })}
+      </div>
+      <div className="tensor-layer-detail">
+        <div className="tensor-layer-detail__head"><strong>层 {safePlane + 1} / {planeCount}</strong><span>完整展开 · {rows}×{columns}</span></div>
+        <div className="tensor-plane tensor-plane--selected"><TensorMatrix values={values.slice(selectedStart, selectedStart + planeSize)} columns={columns} highlights={selectedHighlights} /></div>
+      </div>
+      {planeCount > visiblePlaneCount && <span className="tensor-depth-more">当前展示前 {visiblePlaneCount} 层，共 {planeCount} 层</span>}
     </div> : <TensorMatrix values={values} columns={columns} highlights={highlights} />}
   </article>;
 }

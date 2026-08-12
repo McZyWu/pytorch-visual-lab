@@ -250,11 +250,18 @@ code, pre { font-family: var(--mono); }
 .tensor-matrix > span.is-active, .tensor-scalar.is-active { position: relative; z-index: 2; background: var(--orange); color: #fff; transform: scale(1.07); box-shadow: 0 0 0 2px #fff, 0 0 0 3px var(--orange-dark); }
 .tensor-matrix > .tensor-more { color: var(--muted); background: #eae6dc; }
 .tensor-scalar { width: 70px; height: 52px; display: grid; place-items: center; border: 1px solid #aebbb4; background: #f8f5ec; font: 600 14px var(--mono); }
-.tensor-cuboid { min-height: 130px; position: relative; padding: 20px 0 0 3px; perspective: 700px; }
-.tensor-plane { position: absolute; left: 0; bottom: 0; padding: 7px; border: 1px solid var(--green); background: rgba(247,244,234,.94); box-shadow: 5px -5px 0 rgba(26,71,55,.12); }
+.tensor-cuboid { display: grid; gap: 10px; perspective: 700px; }
+.tensor-layer-picker { display: grid; grid-template-columns: repeat(auto-fit, minmax(78px, 1fr)); gap: 6px; }
+.tensor-layer-picker button { min-width: 0; padding: 7px 8px; display: grid; gap: 4px; border: 1px solid #aebbb4; background: #f1eee5; color: var(--green); text-align: left; cursor: pointer; }
+.tensor-layer-picker button span { font: 700 8px var(--mono); }.tensor-layer-picker button small { overflow: hidden; color: var(--muted); font: 7px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.tensor-layer-picker button:hover, .tensor-layer-picker button.is-selected { border-color: var(--green); background: var(--green); color: #fff; }.tensor-layer-picker button.is-selected small { color: #c8d9d2; }
+.tensor-layer-picker button.has-highlight:not(.is-selected) { border-color: var(--orange); box-shadow: inset 3px 0 0 var(--orange); }.tensor-layer-picker button.has-highlight span::after { content: " · 计算中"; color: var(--orange-dark); }.tensor-layer-picker button.is-selected.has-highlight span::after { color: #ffb38e; }
+.tensor-layer-detail { padding: 11px; border: 1px solid var(--green); background: rgba(247,244,234,.94); box-shadow: 5px 5px 0 rgba(26,71,55,.12); }
+.tensor-layer-detail__head { margin-bottom: 8px; display: flex; justify-content: space-between; gap: 10px; }.tensor-layer-detail__head strong { color: var(--green); font: 700 9px var(--mono); }.tensor-layer-detail__head span { color: var(--muted); font: 8px var(--mono); }
+.tensor-plane { position: relative; width: fit-content; padding: 7px; border: 1px solid var(--green); background: #f8f5ec; box-shadow: 5px -5px 0 rgba(26,71,55,.12); }
 .tensor-plane::before { content: ""; position: absolute; left: 5px; right: -6px; top: -6px; height: 5px; background: rgba(26,71,55,.24); transform: skewX(-45deg); transform-origin: bottom; }
 .tensor-plane::after { content: ""; position: absolute; top: -3px; right: -6px; bottom: 4px; width: 5px; background: rgba(26,71,55,.18); transform: skewY(-45deg); transform-origin: left; }
-.tensor-plane em { display: block; margin-bottom: 4px; color: var(--green); font: normal 7px var(--mono); }.tensor-depth-more { position: absolute; right: 0; top: 0; color: var(--muted); font: 8px var(--mono); }
+.tensor-plane em { display: block; margin-bottom: 4px; color: var(--green); font: normal 7px var(--mono); }.tensor-depth-more { color: var(--muted); font: 8px var(--mono); }
 .operator-node { min-height: 125px; padding: 16px 10px; display: grid; place-items: center; align-content: center; gap: 10px; border: 1px solid var(--orange); background: #f4e5cd; text-align: center; box-shadow: 4px 4px 0 rgba(163,70,31,.2); }
 .operator-node span { color: var(--orange-dark); font: 700 11px var(--mono); overflow-wrap: anywhere; }.operator-node strong { font: 500 13px Georgia, serif; }.operator-node i { display: grid; place-items: center; width: 31px; height: 31px; border-radius: 50%; background: var(--orange); color: #fff; font-style: normal; }
 .process-stepper { padding: 14px 16px 16px; border-top: 1px solid #8da095; background: #f6f3eb; }

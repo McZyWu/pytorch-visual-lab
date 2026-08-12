@@ -24,6 +24,8 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(browser, /链式法则得到梯度/);
   assert.match(browser, /张量计算过程可视化/);
   assert.match(browser, /tensor-visual--cuboid/);
+  assert.match(browser, /切换查看层/);
+  assert.match(browser, /完整展开/);
   assert.match(browser, /自动播放/);
   assert.match(browser, /窗口\(\$\{i\},\$\{j\}\)/);
   assert.match(browser, /最终结果/);
