@@ -26,6 +26,9 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(browser, /tensor-visual--cuboid/);
   assert.match(browser, /切换查看层/);
   assert.match(browser, /完整展开/);
+  assert.match(browser, /PyTorch 官方定义/);
+  assert.match(browser, /公式变量/);
+  assert.match(browser, /katex\.renderToString/);
   assert.match(browser, /自动播放/);
   assert.match(browser, /窗口\(\$\{i\},\$\{j\}\)/);
   assert.match(browser, /最终结果/);

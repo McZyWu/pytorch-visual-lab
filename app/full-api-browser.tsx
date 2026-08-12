@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import katex from "katex";
+import "katex/dist/katex.min.css";
 import apiIndex from "./api-index.generated.json";
 
 type ApiEntry = {
@@ -11,6 +13,7 @@ type RemoteDoc = { signature?: string; parameters?: string[]; summary?: string; 
 type Variable = { name: string; meaning: string; sample: string };
 type Simulation = { mode: "数值计算" | "梯度计算" | "张量变换" | "对象与状态"; title: string; value: unknown; trace: string[] };
 type TensorItem = { key: string; label: string; value: unknown };
+type FormulaSpec = { latex: string; spoken: string; explanation: string; symbols: Array<{ symbol: string; meaning: string }> };
 
 const entries = apiIndex as ApiEntry[];
 const groupCounts = Object.entries(entries.reduce<Record<string, number>>((all, item) => {
@@ -32,29 +35,62 @@ function roundDeep(value: unknown): unknown {
 function rebuild(values: number[], dims: number[]): unknown { if (!dims.length) return values[0]; const chunk = dims.slice(1).reduce((a, b) => a * b, 1); return Array.from({ length: dims[0] }, (_, i) => rebuild(values.slice(i * chunk, (i + 1) * chunk), dims.slice(1))); }
 function reduceLast(value: unknown, op: (xs: number[]) => number): unknown { if (!Array.isArray(value)) return value; return Array.isArray(value[0]) ? value.map((x) => reduceLast(x, op)) : op(value.map(Number)); }
 
-function formulaOf(entry: ApiEntry) {
-  const n = cleanLeaf(entry);
-  if (/matmul|mm|bmm/.test(n)) return "Cᵢⱼ = Σₖ Aᵢₖ Bₖⱼ";
-  if (/add/.test(n)) return "y = x + other";
-  if (/sub/.test(n)) return "y = x − other";
-  if (/mul/.test(n)) return "y = x × other";
-  if (/div/.test(n)) return "y = x ÷ other";
-  if (/mean/.test(n)) return "μ = (1/N) Σᵢ xᵢ";
-  if (/sum/.test(n)) return "y = Σᵢ xᵢ";
-  if (/softmax/.test(n)) return "pᵢ = exp(xᵢ) / Σⱼ exp(xⱼ)";
-  if (/sigmoid/.test(n)) return "σ(x) = 1 / (1 + exp(−x))";
-  if (/relu/.test(n)) return "y = max(0, x)";
-  if (/mse/.test(n)) return "L = (1/N) Σᵢ(ŷᵢ − yᵢ)²";
-  if (/cross.*entropy/.test(n)) return "L = −log(exp(xᵧ) / Σⱼexp(xⱼ))";
-  if (/conv/.test(n)) return "Yₒᵢⱼ = bₒ + ΣcΣuΣv Wₒcuv Xc,i+u,j+v";
-  if (/backward|grad/.test(n) || entry.group === "自动微分") return "g = ∂output / ∂input";
-  if (entry.group === "优化器") return "θₜ₊₁ = θₜ − η · update(gₜ)";
-  if (entry.group === "概率分布") return "x ~ p(x | parameters)";
-  if (entry.group === "分布式训练") return "global = collective(local₀ … localₙ₋₁)";
-  if (entry.group === "数据加载") return "batchₖ = collate(samples[kB:(k+1)B])";
-  if (/reshape|view/.test(n)) return "∏ old_shape = ∏ new_shape";
-  if (/fft/.test(n)) return "Xₖ = Σₙ xₙ exp(−i2πkn/N)";
-  return "output = API(input, parameters)";
+const xySymbols = [{ symbol: "X", meaning: "输入张量" }, { symbol: "Y", meaning: "输出张量，通常与 X 形状相同" }];
+function formulaSpecOf(entry: ApiEntry): FormulaSpec {
+  /* eslint-disable no-useless-escape -- LaTeX control sequences are intentionally stored in symbol strings. */
+  const n = cleanLeaf(entry), family = familyOf(entry);
+  if (family === "matmul") return { latex: String.raw`C_{ij}=\sum_{k=1}^{K}A_{ik}B_{kj}`, spoken: "输出矩阵第 i 行第 j 列，等于 A 的第 i 行与 B 的第 j 列做点积。", explanation: "固定输出位置 (i,j)，把左矩阵这一行和右矩阵这一列的对应元素相乘，再把 K 个乘积相加。", symbols: [{symbol:String.raw`A\in\mathbb{R}^{M\times K}`,meaning:"左输入矩阵，M 行 K 列"},{symbol:String.raw`B\in\mathbb{R}^{K\times N}`,meaning:"右输入矩阵，K 行 N 列"},{symbol:String.raw`C\in\mathbb{R}^{M\times N}`,meaning:"输出矩阵"},{symbol:"i,j,k",meaning:"输出行、输出列、点积累加索引"}] };
+  if (family === "cross_entropy") return { latex: String.raw`\ell_n=-\log\!\left(\frac{\exp(x_{n,y_n})}{\sum_{c=1}^{C}\exp(x_{n,c})}\right),\qquad L=\frac{1}{N}\sum_{n=1}^{N}\ell_n`, spoken: "每个样本先把 logits 转成类别概率，取真实类别的负对数，再对批次求平均。", explanation: "这是目标为类别索引、reduction='mean' 时的官方定义；数值实现通常先减去每行最大值以避免指数溢出。", symbols: [{symbol:"x_{n,c}",meaning:"第 n 个样本对第 c 类的未归一化分数 logit"},{symbol:"y_n",meaning:"第 n 个样本的真实类别索引，范围为 0 到 C−1"},{symbol:"C",meaning:"类别总数"},{symbol:"N",meaning:"批次中的样本数"},{symbol:String.raw`\ell_n,\,L`,meaning:"单样本损失与批次平均损失"}] };
+  if (family === "mse") return { latex: String.raw`\ell_n=(x_n-y_n)^2,\qquad L=\frac{1}{N}\sum_{n=1}^{N}\ell_n`, spoken: "逐元素计算预测与目标之差的平方，然后对所有元素取平均。", explanation: "对应 PyTorch MSELoss 在 reduction='mean' 时的定义；N 是输入张量的元素总数，不只表示 batch 大小。", symbols: [{symbol:"x_n",meaning:"第 n 个预测值"},{symbol:"y_n",meaning:"第 n 个目标值，与 x 形状相同"},{symbol:"N",meaning:"参与归约的元素总数"},{symbol:String.raw`\ell_n,\,L`,meaning:"逐元素平方误差与最终平均损失"}] };
+  if (family === "distance_loss") return { latex: String.raw`\ell_n=|x_n-y_n|,\qquad L=\frac{1}{N}\sum_{n=1}^{N}\ell_n`, spoken: "逐元素取预测值与目标值之差的绝对值，再取平均。", explanation: "这是 L1Loss 的 mean 归约形式；SmoothL1Loss 和 HuberLoss 会在误差接近零时改用二次函数。", symbols: [{symbol:"x_n",meaning:"第 n 个预测值"},{symbol:"y_n",meaning:"第 n 个目标值"},{symbol:"N",meaning:"元素总数"},{symbol:"L",meaning:"平均绝对误差"}] };
+  if (family === "bce") return { latex: String.raw`\ell_n=-\left[y_n\log p_n+(1-y_n)\log(1-p_n)\right],\qquad L=\frac1N\sum_{n=1}^{N}\ell_n`, spoken: "正样本惩罚预测概率太小，负样本惩罚概率太大。", explanation: "p 必须是 0 到 1 之间的概率；若输入是 logits，应使用 BCEWithLogitsLoss 获得更稳定的计算。", symbols: [{symbol:"p_n",meaning:"第 n 个样本预测为正类的概率"},{symbol:String.raw`y_n\in\{0,1\}`,meaning:"二分类目标标签"},{symbol:"N",meaning:"样本或元素数量"},{symbol:"L",meaning:"平均二元交叉熵"}] };
+  if (family === "softmax") return { latex: String.raw`\operatorname{Softmax}(x_i)=\frac{\exp(x_i)}{\sum_j\exp(x_j)}`, spoken: "当前元素的指数除以指定维度上所有元素指数之和。", explanation: "Softmax 沿 dim 的每个切片独立计算，输出值位于 [0,1]，并且该切片全部概率之和等于 1。", symbols: [{symbol:"x_i",meaning:"指定 dim 上第 i 个输入值"},{symbol:"j",meaning:"遍历同一切片全部元素的求和索引"},{symbol:String.raw`\exp`,meaning:"自然指数函数"},{symbol:String.raw`\operatorname{Softmax}(x_i)`,meaning:"第 i 个位置的归一化概率"}] };
+  if (family === "convolution") {
+    const is1d=/1d/.test(n), is3d=/3d/.test(n);
+    const latex=is1d?String.raw`Y_{n,o,t}=b_o+\sum_{c=0}^{C_{\mathrm{in}}-1}\sum_{u=0}^{K-1}W_{o,c,u}\,X_{n,c,\,t s+u d-p}`:is3d?String.raw`Y_{n,o,i,j,k}=b_o+\sum_c\sum_u\sum_v\sum_w W_{o,c,u,v,w}\,X_{n,c,\,is+ud-p,\,js+vd-p,\,ks+wd-p}`:String.raw`Y_{n,o,i,j}=b_o+\sum_{c=0}^{C_{\mathrm{in}}-1}\sum_{u=0}^{K_H-1}\sum_{v=0}^{K_W-1}W_{o,c,u,v}\,X_{n,c,\,i s_H+u d_H-p_H,\,j s_W+v d_W-p_W}`;
+    return { latex, spoken: "卷积输出的一个位置，是所有输入通道对应窗口与卷积核逐元素乘积的总和，再加偏置。", explanation: "与 PyTorch 官方定义一致：这里实际执行的是互相关，不会先翻转卷积核。滑动位置由 stride、padding 和 dilation 共同决定。", symbols: [{symbol:String.raw`X_{n,c,\dots}`,meaning:"第 n 个样本、第 c 个输入通道中的输入值"},{symbol:String.raw`W_{o,c,\dots}`,meaning:"连接输入通道 c 与输出通道 o 的卷积核权重"},{symbol:String.raw`Y_{n,o,\dots}`,meaning:"第 n 个样本、第 o 个输出通道的结果"},{symbol:"b_o",meaning:"输出通道 o 的偏置"},{symbol:String.raw`s,\,p,\,d`,meaning:"stride 步幅、padding 填充、dilation 膨胀间距"}] };
+  }
+  if (family === "pooling") return n.includes("avg") ? { latex:String.raw`Y_{n,c,i,j}=\frac{1}{|\Omega_{ij}|}\sum_{(u,v)\in\Omega_{ij}}X_{n,c,u,v}`,spoken:"对当前池化窗口中的全部值求平均。",explanation:"每个通道独立池化；Ωᵢⱼ 是由 kernel_size、stride、padding 决定的当前窗口。",symbols:[{symbol:String.raw`\Omega_{ij}`,meaning:"输出位置 (i,j) 对应的输入窗口"},{symbol:String.raw`|\Omega_{ij}|`,meaning:"窗口内元素数量"},{symbol:String.raw`X,\,Y`,meaning:"输入张量与池化输出"}] } : { latex:String.raw`Y_{n,c,i,j}=\max_{(u,v)\in\Omega_{ij}}X_{n,c,u,v}`,spoken:"从当前池化窗口中选出最大值。",explanation:"MaxPool 不混合通道，只在每个通道的局部窗口内取最大值。",symbols:[{symbol:String.raw`\Omega_{ij}`,meaning:"输出位置 (i,j) 对应的输入窗口"},{symbol:String.raw`n,\,c`,meaning:"样本索引与通道索引"},{symbol:String.raw`X,\,Y`,meaning:"输入张量与池化输出"}] };
+  if (family === "linear") return { latex:String.raw`Y=XW^{\mathsf T}+b,\qquad y_j=b_j+\sum_{i=1}^{H_{\mathrm{in}}}x_iW_{j,i}`,spoken:"输入向量乘权重矩阵的转置，再加上偏置。",explanation:"这是 PyTorch Linear 的官方变换形式。最后一维必须等于 in_features，输出最后一维等于 out_features。",symbols:[{symbol:"X",meaning:"输入，最后一维大小为 Hᵢₙ"},{symbol:"W",meaning:"可学习权重，形状为 (Hₒᵤₜ,Hᵢₙ)"},{symbol:"b",meaning:"可选偏置，长度为 Hₒᵤₜ"},{symbol:"Y",meaning:"线性变换输出"}] };
+  if (family === "activation") {
+    const specs:Record<string,[string,string]>={relu:[String.raw`\operatorname{ReLU}(x)=\max(0,x)`,"负数变为 0，非负数保持不变。"],sigmoid:[String.raw`\sigma(x)=\frac{1}{1+\exp(-x)}`,"把任意实数压缩到 0 与 1 之间。"],tanh:[String.raw`\tanh(x)=\frac{\exp(x)-\exp(-x)}{\exp(x)+\exp(-x)}`,"把输入压缩到 −1 与 1 之间。"],gelu:[String.raw`\operatorname{GELU}(x)=x\,\Phi(x)`,"用标准正态分布累计概率平滑地门控输入。"],silu:[String.raw`\operatorname{SiLU}(x)=x\,\sigma(x)`,"输入乘以自身的 Sigmoid 门值。"],leaky_relu:[String.raw`\operatorname{LeakyReLU}(x)=\max(0,x)+\alpha\min(0,x)`,"负半轴保留斜率 α，避免梯度完全为零。"],elu:[String.raw`\operatorname{ELU}(x)=\begin{cases}x,&x>0\\ \alpha(\exp(x)-1),&x\le0\end{cases}`,"正半轴保持线性，负半轴指数饱和。"],softplus:[String.raw`\operatorname{Softplus}(x)=\frac1\beta\log(1+\exp(\beta x))`,"ReLU 的平滑近似。"]};
+    const [latex,spoken]=specs[n]??[String.raw`Y=f(X)`,"把激活函数逐元素应用到输入张量。"];return {latex,spoken,explanation:"激活函数逐元素计算，因此默认不改变张量形状。",symbols:[{symbol:"x,\,y",meaning:"单个输入元素与对应输出元素"},{symbol:"\alpha,\,\beta",meaning:"部分激活函数使用的斜率或平滑参数"},{symbol:"\Phi",meaning:"标准正态分布的累积分布函数"}]};
+  }
+  if (family === "reduction") {
+    if (/mean/.test(n)) return {latex:String.raw`\mu=\frac{1}{N}\sum_{i=1}^{N}x_i`,spoken:"把指定维度的 N 个元素相加后除以 N。",explanation:"未指定 dim 时归约全部元素；指定 dim 时对每个切片分别计算。",symbols:[{symbol:"x_i",meaning:"归约切片中的第 i 个元素"},{symbol:"N",meaning:"该切片的元素数量"},{symbol:"\mu",meaning:"算术平均值"}]};
+    if (/prod/.test(n)) return {latex:String.raw`y=\prod_{i=1}^{N}x_i`,spoken:"把指定维度中的全部元素连续相乘。",explanation:"输出形状取决于 dim 与 keepdim。",symbols:[{symbol:"x_i",meaning:"第 i 个被乘元素"},{symbol:"N",meaning:"归约元素数"},{symbol:"y",meaning:"乘积结果"}]};
+    if (/std|var/.test(n)) return {latex:n.includes("std")?String.raw`s=\sqrt{\frac{1}{N-\delta N}\sum_{i=1}^{N}(x_i-\bar{x})^2}`:String.raw`s^2=\frac{1}{N-\delta N}\sum_{i=1}^{N}(x_i-\bar{x})^2`,spoken:"计算每个元素与均值的偏差平方，再按校正后的自由度归一化。",explanation:"PyTorch 用 correction 控制自由度校正；默认 correction=1，即样本标准差/方差。",symbols:[{symbol:"\bar{x}",meaning:"归约切片的均值"},{symbol:"N",meaning:"元素数量"},{symbol:"\delta N",meaning:"correction 自由度校正值"},{symbol:"s,\,s^2",meaning:"标准差与方差"}]};
+    const op=/max|amax|argmax/.test(n)?"\max":/min|amin|argmin/.test(n)?"\min":"\sum";return {latex:String.raw`y=${op}_{1\le i\le N}x_i`,spoken:op==="\\sum"?"把指定维度中的全部元素相加。":"在指定维度中寻找极值。",explanation:"argmax/argmin 返回极值位置索引；max/min 返回极值本身。",symbols:[{symbol:"x_i",meaning:"归约切片中的第 i 个元素"},{symbol:"N",meaning:"归约元素数量"},{symbol:"y",meaning:"归约后的值或索引"}]};
+  }
+  if (family === "binary") { const ops:Record<string,string>={add:"+",sub:"-",mul:"\\cdot",multiply:"\\cdot",div:"/",divide:"/",pow:"^{\,b}",remainder:"\\bmod"};const op=ops[n]??"+";const latex=n==="pow"?String.raw`Y_i=X_i^{\,b}`:String.raw`Y_i=X_i ${op} B_i`;return {latex,spoken:"按广播规则对两个输入逐元素计算。",explanation:"如果两个张量形状不同，PyTorch 会从最后一维开始按 broadcasting 规则对齐；标量会扩展到每个位置。",symbols:[{symbol:"X_i",meaning:"第一个输入在位置 i 的元素"},{symbol:"B_i\text{ 或 }b",meaning:"广播后的第二个输入元素或标量"},{symbol:"Y_i",meaning:"位置 i 的输出"}]}; }
+  if (family === "unary") { const map:Record<string,string>={abs:String.raw`y=|x|`,absolute:String.raw`y=|x|`,neg:String.raw`y=-x`,negative:String.raw`y=-x`,exp:String.raw`y=e^x`,log:String.raw`y=\ln x`,log10:String.raw`y=\log_{10}x`,log2:String.raw`y=\log_2x`,sqrt:String.raw`y=\sqrt{x}`,square:String.raw`y=x^2`,reciprocal:String.raw`y=\frac1x`,sin:String.raw`y=\sin x`,cos:String.raw`y=\cos x`,tan:String.raw`y=\tan x`,floor:String.raw`y=\lfloor x\rfloor`,ceil:String.raw`y=\lceil x\rceil`};return {latex:map[n]??String.raw`Y_i=f(X_i)`,spoken:"对输入张量中的每个元素独立应用该数学函数。",explanation:"逐元素算子通常保持 shape 不变；对数、平方根、倒数等函数还要求输入位于有效定义域。",symbols:[...xySymbols,{symbol:"i",meaning:"张量中的元素位置"}]}; }
+  if (family === "autograd") return {latex:String.raw`\frac{\partial L}{\partial x}=\frac{\partial L}{\partial y}\,\frac{\partial y}{\partial x}`,spoken:"反向传播用链式法则，把上游梯度乘以当前运算的局部导数。",explanation:"对于非标量输出，backward 还需传入与输出同形状的 grad_output，用它计算向量—雅可比积。",symbols:[{symbol:"L",meaning:"最终标量目标或损失"},{symbol:"x,\,y",meaning:"当前计算图节点的输入与输出"},{symbol:"\partial L/\partial y",meaning:"从后续节点传来的上游梯度"},{symbol:"\partial y/\partial x",meaning:"当前运算的局部导数"}]};
+  if (family === "reshape") return {latex:String.raw`\prod_{r=1}^{R}d_r=\prod_{s=1}^{S}d'_s,\qquad \operatorname{vec}(Y)=\operatorname{vec}(X)`,spoken:"变形前后元素总数相同，并保持元素的线性顺序。",explanation:"reshape 只重新解释维度分组；若内存布局允许会返回 view，否则可能复制数据。",symbols:[{symbol:"d_r",meaning:"输入 shape 的第 r 个维度"},{symbol:"d'_s",meaning:"目标 shape 的第 s 个维度"},{symbol:"\operatorname{vec}",meaning:"按存储顺序展开为一维序列"}]};
+  if (family === "transpose") return {latex:String.raw`Y_{i,j}=X_{j,i}`,spoken:"交换两个维度的索引位置。",explanation:"二维转置把行变成列；高维 transpose 只交换指定的两个维度。",symbols:[{symbol:"X_{j,i}",meaning:"输入在交换后索引处的元素"},{symbol:"Y_{i,j}",meaning:"输出位置 (i,j) 的元素"}]};
+  if (family === "fft") return {latex:String.raw`X_k=\sum_{n=0}^{N-1}x_n\exp\!\left(-\mathrm{i}\frac{2\pi kn}{N}\right)`,spoken:"把时域的 N 个采样分解成 N 个复数频率分量。",explanation:"这是离散傅里叶变换；FFT 是计算该公式的高效算法。",symbols:[{symbol:"x_n",meaning:"第 n 个时域采样"},{symbol:"X_k",meaning:"第 k 个频率分量"},{symbol:"N",meaning:"变换长度"},{symbol:"\mathrm{i}",meaning:"虚数单位，i²=−1"}]};
+  if (family === "linalg") return {latex:/det/.test(n)?String.raw`\det\!\begin{pmatrix}a&b\\c&d\end{pmatrix}=ad-bc`:/inv|inverse/.test(n)?String.raw`A^{-1}=\frac{1}{ad-bc}\begin{pmatrix}d&-b\\-c&a\end{pmatrix}`:String.raw`\lVert A\rVert_F=\sqrt{\sum_i\sum_j|a_{ij}|^2}`,spoken:"按照当前线性代数接口计算矩阵的行列式、逆矩阵或范数。",explanation:"逆矩阵只在 det(A)≠0 时存在；Frobenius 范数是所有矩阵元素平方和的平方根。",symbols:[{symbol:"A=(a_{ij})",meaning:"输入矩阵"},{symbol:"\det(A)",meaning:"行列式，反映矩阵是否可逆"},{symbol:"A^{-1}",meaning:"满足 AA⁻¹=I 的逆矩阵"},{symbol:"\lVert A\rVert_F",meaning:"Frobenius 范数"}]};
+  if (family === "optimizer") return {latex:String.raw`\theta_{t+1}=\theta_t-\eta\,g_t,\qquad g_t=\nabla_{\theta}L(\theta_t)`,spoken:"沿损失梯度的反方向移动参数。",explanation:"这是基础 SGD 更新；带 momentum、Adam 等优化器会先根据历史梯度计算更新量。",symbols:[{symbol:"\theta_t",meaning:"第 t 步的模型参数"},{symbol:"\eta",meaning:"learning rate 学习率"},{symbol:"g_t",meaning:"损失对参数的当前梯度"},{symbol:"L",meaning:"需要最小化的损失函数"}]};
+  if (family === "sequence") return n.includes("linspace")?{latex:String.raw`x_i=\mathrm{start}+i\frac{\mathrm{end}-\mathrm{start}}{S-1},\quad i=0,\ldots,S-1`,spoken:"在 start 与 end 之间生成包含两个端点的等间隔序列。",explanation:"steps=S 决定元素个数，因此相邻元素间隔为 (end−start)/(S−1)。",symbols:[{symbol:"S",meaning:"steps，输出元素个数"},{symbol:"i",meaning:"从 0 开始的元素索引"},{symbol:"x_i",meaning:"第 i 个生成值"}]}:{latex:String.raw`x_i=\mathrm{start}+i\cdot\mathrm{step},\quad x_i<\mathrm{end}`,spoken:"从 start 开始反复增加 step，在到达 end 前停止。",explanation:"正 step 时通常不包含 end；负 step 时不等式方向相反。",symbols:[{symbol:"i",meaning:"从 0 开始的索引"},{symbol:"\mathrm{step}",meaning:"相邻元素之差"},{symbol:"x_i",meaning:"第 i 个生成值"}]};
+  if (family === "comparison") return {latex:String.raw`Y_i=\mathbf{1}\!\left[X_i\;\mathcal{R}\;B_i\right]`,spoken:"逐元素判断两个值是否满足指定比较关系。",explanation:"关系 R 可以是 =、≠、>、≥、< 或 ≤；结果是同形状的布尔张量。",symbols:[{symbol:"\mathcal R",meaning:"当前接口对应的比较关系"},{symbol:"\mathbf1[\cdot]",meaning:"条件成立返回 True，否则 False"},{symbol:"X_i,B_i",meaning:"广播后位置 i 的两个输入"}]};
+  if (family === "selection") return {latex:String.raw`Y_i=\begin{cases}X_i,&C_i=\mathrm{True}\\B_i,&C_i=\mathrm{False}\end{cases}`,spoken:"条件为真选择 input，否则选择 other。",explanation:"condition、input 和 other 会先按 broadcasting 规则对齐。",symbols:[{symbol:"C_i",meaning:"位置 i 的布尔条件"},{symbol:"X_i,B_i",meaning:"两个候选输入"},{symbol:"Y_i",meaning:"选择后的输出"}]};
+  if (["squeeze","combine","split","indexing","inspection"].includes(family)) return {latex:String.raw`Y_{\boldsymbol{i}}=X_{\phi(\boldsymbol{i})}`,spoken:"数值保持不变，由索引映射 φ 决定元素在输出中的位置。",explanation:"这类操作主要改变 shape、维度或索引组织；具体映射由 dim、shape、index 等参数决定。",symbols:[{symbol:"\boldsymbol{i}",meaning:"输出张量的多维索引"},{symbol:"\phi",meaning:"当前变形或索引操作定义的位置映射"},{symbol:"X,\,Y",meaning:"输入张量与输出张量"}]};
+  if (family === "creation") return {latex:String.raw`Y_{i_1,\ldots,i_D}=c,\qquad \operatorname{shape}(Y)=(d_1,\ldots,d_D)`,spoken:"按照目标 shape 创建张量，并按接口规则写入元素。",explanation:"zeros、ones、full 分别令 c 为 0、1 或 fill_value；eye 只把主对角线置为 1。",symbols:[{symbol:"D",meaning:"张量维数"},{symbol:"d_1,\ldots,d_D",meaning:"各维长度"},{symbol:"c",meaning:"填充值"}]};
+  if (family === "random" || family === "distribution") return {latex:String.raw`X_i\overset{\mathrm{i.i.d.}}{\sim}\mathcal{D}(\boldsymbol{\theta})`,spoken:"每个元素按照指定分布及其参数独立采样。",explanation:"设置随机种子可以复现实验；分布 D 和参数 θ 由当前随机接口决定。",symbols:[{symbol:"X_i",meaning:"第 i 个随机样本"},{symbol:"\mathcal D",meaning:"均匀、正态、伯努利等概率分布"},{symbol:"\boldsymbol\theta",meaning:"分布参数，如均值、标准差或概率"},{symbol:"\mathrm{i.i.d.}",meaning:"独立同分布"}]};
+  return {latex:String.raw`Y=\mathcal{F}(X;\boldsymbol{\theta})`,spoken:"接口 F 使用参数 θ 处理输入 X 并产生输出 Y。",explanation:"该接口没有独立的通用标量公式；请以官方签名、输入约束和实验过程为准。",symbols:[{symbol:"\mathcal F",meaning:`当前接口 ${entry.name}`},{symbol:"X",meaning:"输入张量、对象或状态"},{symbol:"\boldsymbol\theta",meaning:"影响接口行为的参数集合"},{symbol:"Y",meaning:"返回值或更新后的状态"}]};
+}
+
+function MathExpression({ latex, spoken, inline = false }: { latex: string; spoken: string; inline?: boolean }) {
+  const html = katex.renderToString(latex, { displayMode: !inline, throwOnError: false, strict: false, output: "html" });
+  return <span className={inline ? "math-expression math-expression--inline" : "math-expression"} role="math" aria-label={spoken} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function FormulaPanel({ entry, compact = false }: { entry: ApiEntry; compact?: boolean }) {
+  const formula = formulaSpecOf(entry);
+  return <div className={`formula-panel ${compact ? "formula-panel--compact" : ""}`}>
+    <MathExpression latex={formula.latex} spoken={formula.spoken} />
+    <p className="formula-reading"><b>怎么读：</b>{formula.spoken}</p>
+    {!compact && <><p className="formula-note">{formula.explanation}</p><div className="formula-symbols"><span>公式变量</span><dl>{formula.symbols.map((item) => <div key={item.symbol}><dt><MathExpression latex={item.symbol} spoken={item.symbol} inline /></dt><dd>{item.meaning}</dd></div>)}</dl></div><a className="formula-source" href={entry.url} target="_blank" rel="noreferrer">依据 PyTorch 官方定义 · 查看原文 ↗</a></>}
+  </div>;
 }
 
 function variablesOf(entry: ApiEntry, remote?: RemoteDoc | null): Variable[] {
@@ -294,7 +330,7 @@ function CalculationVisualizer({ entry, source, sim }: { entry: ApiEntry; source
     <div className="calculation-viz__head"><div><span>INTERACTIVE TENSOR FLOW</span><h4>输入 → 逐步计算 → 输出</h4></div><p>橙色单元格是第 {safeStep + 1} 步正在参与计算的位置</p></div>
     <div className="tensor-flow">
       <div className="tensor-side"><small>输入张量</small>{inputs.map((item) => <TensorVisual key={item.key} item={item} highlights={highlightCells(entry, parsed, sim, safeStep, item, "input")} />)}</div>
-      <div className="operator-node"><span>{entry.leaf}</span><strong>{formulaOf(entry)}</strong><i>→</i></div>
+      <div className="operator-node"><span>{entry.leaf}</span><MathExpression latex={formulaSpecOf(entry).latex} spoken={formulaSpecOf(entry).spoken} /><i>→</i></div>
       <div className="tensor-side"><small>输出张量</small>{outputs.map((item, index) => <TensorVisual key={`${item.key}-${index}`} item={item} highlights={highlightCells(entry, parsed, sim, safeStep, item, "output")} />)}</div>
     </div>
     <div className="process-stepper">
@@ -432,13 +468,13 @@ export default function FullApiBrowser() {
     <div className="docs-layout">
       <aside className="docs-groups"><button className={group==="全部模块"?"active":""} onClick={()=>applyFilter("全部模块",type)}><span>全部模块</span><b>{entries.length}</b></button>{groupCounts.map(([name,count])=><button key={name} className={group===name?"active":""} onClick={()=>applyFilter(name,type)}><span>{name}</span><b>{count}</b></button>)}</aside>
       <div className="docs-results"><div className="docs-results__head"><p>找到 <b>{filtered.length.toLocaleString("zh-CN")}</b> 个实验</p><span>第 {safePage+1} / {pages} 页</span></div><div className="api-table" role="table"><div className="api-table__header"><span>接口</span><span>类型</span><span>中文用途</span></div>{visible.map((entry)=><button key={entry.name} className={selected.name===entry.name?"selected":""} onClick={()=>choose(entry)}><code>{entry.name}</code><span>{entry.typeLabel}</span><p>{entry.summary}</p></button>)}{!visible.length&&<div className="docs-empty">没有匹配的接口，换个关键词试试。</div>}</div><div className="pagination"><button disabled={safePage===0} onClick={()=>setPage(Math.max(0,safePage-1))}>← 上一页</button><span>{filtered.length?safePage*pageSize+1:0}–{Math.min((safePage+1)*pageSize,filtered.length)} / {filtered.length}</span><button disabled={safePage>=pages-1} onClick={()=>setPage(Math.min(pages-1,safePage+1))}>下一页 →</button></div></div>
-      <aside className="api-inspector"><div className="api-inspector__top"><span>{selected.group}</span><i>{selected.typeLabel}</i></div><h3>{selected.leaf}</h3><code className="api-inspector__path">{selected.name}</code><section><small>它做什么</small><p>{conceptOf(selected)}</p></section><section><small>核心关系 / 公式</small><div className="mini-formula">{formulaOf(selected)}</div></section><section><small>应用场景</small><p>{scenarioOf(selected)}</p></section><a className="official-link" href="#deep-lab">进入本接口完整实验 ↓</a></aside>
+      <aside className="api-inspector"><div className="api-inspector__top"><span>{selected.group}</span><i>{selected.typeLabel}</i></div><h3>{selected.leaf}</h3><code className="api-inspector__path">{selected.name}</code><section><small>它做什么</small><p>{conceptOf(selected)}</p></section><section><small>官方数学定义</small><FormulaPanel entry={selected} compact /></section><section><small>应用场景</small><p>{scenarioOf(selected)}</p></section><a className="official-link" href="#deep-lab">进入本接口完整实验 ↓</a></aside>
     </div>
 
     <article className="deep-lab" id="deep-lab">
       <header><div><p className="eyebrow">FULL API EXPERIMENT</p><h3>{selected.name}</h3></div><span>{sim.mode}</span></header>
       <div className="deep-lab__grid">
-        <section className="deep-card"><small>① 中文解析</small><h4>{selected.summary}</h4><p>{conceptOf(selected)}</p><div className="deep-formula"><span>核心关系</span><strong>{formulaOf(selected)}</strong></div></section>
+        <section className="deep-card"><small>① 中文解析与官方公式</small><h4>{selected.summary}</h4><p>{conceptOf(selected)}</p><div className="deep-formula"><span>标准数学定义</span><FormulaPanel entry={selected} /></div></section>
         <section className="deep-card"><small>② 官方调用方法</small>{docLoading?<p className="loading-line">正在读取官方签名…</p>:<><pre><code>{remote?.signature||`${selected.name}(*args, **kwargs)`}</code></pre>{remote?.summary&&<p className="official-summary">官方说明：{remote.summary}</p>}</>}<a href={selected.url} target="_blank" rel="noreferrer">核对官方原文 ↗</a></section>
         <section className="deep-card deep-card--wide"><small>③ 参数与变量地图</small><div className="deep-vars">{variablesOf(selected,remote).map((v)=><div key={v.name}><code>{v.name}</code><p>{v.meaning}</p><span>例：{v.sample}</span></div>)}</div></section>
         <section className="deep-card"><small>④ 使用场景与 Example</small><p>{scenarioOf(selected)}</p><pre><code>{selected.type==="class"?`component = ${selected.name}(...)\noutput = component(input)`:selected.name.startsWith("torch.Tensor.")?`output = input.${selected.leaf}(...)`:`output = ${selected.name}(input, ...)`}</code></pre></section>
