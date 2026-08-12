@@ -228,7 +228,15 @@ code, pre { font-family: var(--mono); }
 .simulator-card textarea { width: 100%; min-height: 128px; resize: vertical; padding: 12px; border: 1px solid var(--line); outline: 0; background: #f8f5ee; font: 10px/1.6 var(--mono); }
 .simulator-card textarea:focus { border-color: var(--green); }
 .simulator-card button { width: 100%; margin-top: 10px; padding: 11px; border: 0; background: var(--orange); color: #fff; font-size: 11px; font-weight: 700; cursor: pointer; box-shadow: 3px 3px 0 var(--orange-dark); }
+.simulator-card button:disabled { cursor: wait; opacity: .72; box-shadow: none; }
+.run-hint { margin-top: 10px !important; color: var(--muted) !important; font-size: 9px !important; }
 .sim-error { margin-top: 12px !important; padding: 10px; color: #762316 !important; background: #f5ddd5; }
+.run-receipt { margin-bottom: 17px; padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--line); background: #f4f0e7; }
+.run-receipt b { font-size: 11px; }.run-receipt span { color: var(--muted); font: 9px var(--mono); }
+.output-card--running .run-receipt { color: var(--orange-dark); border-color: var(--orange); }
+.output-card--success { animation: output-confirm .7s ease-out; }.output-card--success .run-receipt { color: #fff; border-color: var(--green); background: var(--green); }.output-card--success .run-receipt span { color: #c9ded4; }
+.output-card--error .run-receipt { color: #762316; border-color: #b93724; background: #f5ddd5; }
+@keyframes output-confirm { 0% { box-shadow: 0 0 0 5px rgba(242,99,42,.35); } 100% { box-shadow: none; } }
 .sim-mode { display: flex; align-items: center; gap: 12px; }.sim-mode b { font: 500 18px Georgia, serif; }.sim-mode span { color: var(--muted); font-size: 9px; }
 .trace-row { display: grid; grid-template-columns: repeat(3, 1fr); margin: 17px 0; }
 .trace-row > div { padding: 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 22px 1fr; gap: 7px; align-items: center; }

@@ -19,6 +19,8 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(browser, /FULL API EXPERIMENT/);
   assert.match(browser, /运行本接口实验/);
   assert.match(browser, /结构预演/);
+  assert.match(browser, /运行成功/);
+  assert.match(browser, /aria-live="polite"/);
   assert.ok(JSON.parse(index).length > 9000);
   assert.match(layout, /lang="zh-CN"/);
   assert.match(packageJson, /"name": "pytorch-visual-lab"/);

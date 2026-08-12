@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import apiIndex from "./api-index.generated.json";
 
 type ApiEntry = {
@@ -137,6 +137,8 @@ export default function FullApiBrowser() {
   const [selectedName, setSelectedName] = useState("torch.Tensor.backward"); const [remote, setRemote] = useState<RemoteDoc | null>(null); const [docLoading, setDocLoading] = useState(true);
   const initial = entries.find((x) => x.name === "torch.Tensor.backward") ?? entries[0];
   const [spec, setSpec] = useState(() => defaultSpec(initial)); const [sim, setSim] = useState<Simulation>(() => simulate(initial, defaultSpec(initial))); const [simError, setSimError] = useState("");
+  const [runState, setRunState] = useState<"idle" | "running" | "success" | "error">("idle"); const [runCount, setRunCount] = useState(0); const [lastRunAt, setLastRunAt] = useState("");
+  const outputRef = useRef<HTMLElement>(null);
   const pageSize = 80;
   const filtered = useMemo(() => { const keyword=query.trim().toLowerCase(); return entries.filter((entry)=>(group==="全部模块"||entry.group===group)&&(type==="全部类型"||entry.typeLabel===type)&&(!keyword||`${entry.name} ${entry.summary} ${entry.typeLabel} ${entry.group}`.toLowerCase().includes(keyword))); }, [query,group,type]);
   const pages=Math.max(1,Math.ceil(filtered.length/pageSize)), safePage=Math.min(page,pages-1), visible=filtered.slice(safePage*pageSize,(safePage+1)*pageSize);
@@ -145,8 +147,18 @@ export default function FullApiBrowser() {
   useEffect(() => { let active=true; fetch(`/api/docs?name=${encodeURIComponent(selected.name)}&url=${encodeURIComponent(selected.url)}`).then((r)=>r.json()).then((data)=>{if(active){setRemote(data);setDocLoading(false);}}).catch(()=>{if(active){setRemote({error:"官方详情暂时无法读取"});setDocLoading(false);}}); return()=>{active=false;}; }, [selected.name,selected.url]);
 
   function applyFilter(nextGroup:string,nextType:string){setGroup(nextGroup);setType(nextType);setPage(0);}
-  function choose(entry:ApiEntry){const next=defaultSpec(entry);setSelectedName(entry.name);setRemote(null);setDocLoading(true);setSpec(next);setSimError("");setSim(simulate(entry,next));}
-  function run(){try{setSim(simulate(selected,spec));setSimError("");}catch(error){setSimError(error instanceof Error?error.message:"请输入有效 JSON");}}
+  function choose(entry:ApiEntry){const next=defaultSpec(entry);setSelectedName(entry.name);setRemote(null);setDocLoading(true);setSpec(next);setSimError("");setRunState("idle");setRunCount(0);setLastRunAt("");setSim(simulate(entry,next));}
+  function run(){
+    setRunState("running"); setSimError("");
+    window.setTimeout(()=>{
+      try {
+        setSim(simulate(selected,spec)); setRunCount((count)=>count+1); setLastRunAt(new Date().toLocaleTimeString("zh-CN",{hour12:false})); setRunState("success");
+        window.requestAnimationFrame(()=>outputRef.current?.scrollIntoView({behavior:"smooth",block:"center"}));
+      } catch(error) {
+        setSimError(error instanceof Error?error.message:"请输入有效 JSON"); setRunState("error");
+      }
+    },180);
+  }
 
   return <section className="docs-atlas" id="all-apis">
     <div className="docs-atlas__intro"><div><p className="eyebrow">PYTORCH 2.13 · EVERY API IS A LAB</p><h2>9,066 个接口，全部进入深度实验</h2><p>选择任意官方 API，立即得到中文作用、精确签名、参数解释、核心关系式、调用示例、应用场景与输入输出实验。数值算子直接计算；硬件、分布式、编译等接口进行真实约束下的结构预演。</p></div><div className="docs-atlas__stats"><div><strong>{entries.length.toLocaleString("zh-CN")}</strong><span>深度实验</span></div><div><strong>{groupCounts.length}</strong><span>学习模块</span></div><div><strong>100%</strong><span>API 覆盖</span></div></div></div>
@@ -164,8 +176,8 @@ export default function FullApiBrowser() {
         <section className="deep-card"><small>② 官方调用方法</small>{docLoading?<p className="loading-line">正在读取官方签名…</p>:<><pre><code>{remote?.signature||`${selected.name}(*args, **kwargs)`}</code></pre>{remote?.summary&&<p className="official-summary">官方说明：{remote.summary}</p>}</>}<a href={selected.url} target="_blank" rel="noreferrer">核对官方原文 ↗</a></section>
         <section className="deep-card deep-card--wide"><small>③ 参数与变量地图</small><div className="deep-vars">{variablesOf(selected,remote).map((v)=><div key={v.name}><code>{v.name}</code><p>{v.meaning}</p><span>例：{v.sample}</span></div>)}</div></section>
         <section className="deep-card"><small>④ 使用场景与 Example</small><p>{scenarioOf(selected)}</p><pre><code>{selected.type==="class"?`component = ${selected.name}(...)\noutput = component(input)`:selected.name.startsWith("torch.Tensor.")?`output = input.${selected.leaf}(...)`:`output = ${selected.name}(input, ...)`}</code></pre></section>
-        <section className="deep-card simulator-card"><small>⑤ 输入与执行</small><label><span>实验输入（JSON）</span><textarea value={spec} onChange={(e)=>setSpec(e.target.value)} spellCheck={false}/></label><button onClick={run}>▶ 运行本接口实验</button>{simError&&<p className="sim-error">{simError}</p>}</section>
-        <section className="deep-card deep-card--wide output-card"><small>⑥ 输出与逐步解释</small><div className="sim-mode"><b>{sim.title}</b><span>{sim.mode==="数值执行"?"与所示运算的数值规则一致":"不伪造硬件或运行时结果"}</span></div><div className="trace-row">{sim.trace.map((step,i)=><div key={step}><span>{i+1}</span><p>{step}</p></div>)}</div><pre><code>{JSON.stringify(sim.value,null,2)}</code></pre></section>
+        <section className="deep-card simulator-card"><small>⑤ 输入与执行</small><label><span>实验输入（JSON）</span><textarea value={spec} onChange={(e)=>{setSpec(e.target.value);setRunState("idle");}} spellCheck={false}/></label><button type="button" onClick={run} disabled={runState==="running"}>{runState==="running"?"⏳ 正在执行…":runState==="success"?"✓ 已执行 · 再运行一次":"▶ 运行本接口实验"}</button>{runState==="idle"&&<p className="run-hint">修改输入后点击按钮，页面会自动定位到本次输出。</p>}{simError&&<p className="sim-error" role="alert">{simError}</p>}</section>
+        <section ref={outputRef} className={`deep-card deep-card--wide output-card output-card--${runState}`} aria-live="polite"><small>⑥ 输出与逐步解释</small><div className="run-receipt"><b>{runState==="running"?"正在计算…":runState==="success"?`运行成功 · 第 ${runCount} 次`:runState==="error"?"运行失败":"示例输出预览"}</b><span>{lastRunAt?`完成时间 ${lastRunAt}`:"点击上方按钮执行当前输入"}</span></div><div className="sim-mode"><b>{sim.title}</b><span>{sim.mode==="数值执行"?"与所示运算的数值规则一致":"不伪造硬件或运行时结果"}</span></div><div className="trace-row">{sim.trace.map((step,i)=><div key={step}><span>{i+1}</span><p>{step}</p></div>)}</div><pre><code>{JSON.stringify(sim.value,null,2)}</code></pre></section>
       </div>
     </article>
   </section>;
