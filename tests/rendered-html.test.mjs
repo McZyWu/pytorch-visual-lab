@@ -21,6 +21,9 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(browser, /结构预演/);
   assert.match(browser, /运行成功/);
   assert.match(browser, /aria-live="polite"/);
+  assert.match(browser, /链式法则得到梯度/);
+  assert.match(browser, /最终结果/);
+  assert.doesNotMatch(browser, /output_contract|接口生命周期|返回值以官方签名为准/);
   assert.ok(JSON.parse(index).length > 9000);
   assert.match(layout, /lang="zh-CN"/);
   assert.match(packageJson, /"name": "pytorch-visual-lab"/);
