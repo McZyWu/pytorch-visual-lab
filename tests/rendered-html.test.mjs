@@ -22,6 +22,10 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(browser, /运行成功/);
   assert.match(browser, /aria-live="polite"/);
   assert.match(browser, /链式法则得到梯度/);
+  assert.match(browser, /张量计算过程可视化/);
+  assert.match(browser, /tensor-visual--cuboid/);
+  assert.match(browser, /自动播放/);
+  assert.match(browser, /窗口\(\$\{i\},\$\{j\}\)/);
   assert.match(browser, /最终结果/);
   assert.doesNotMatch(browser, /output_contract|接口生命周期|返回值以官方签名为准/);
   assert.ok(JSON.parse(index).length > 9000);

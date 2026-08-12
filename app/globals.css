@@ -238,6 +238,29 @@ code, pre { font-family: var(--mono); }
 .output-card--error .run-receipt { color: #762316; border-color: #b93724; background: #f5ddd5; }
 @keyframes output-confirm { 0% { box-shadow: 0 0 0 5px rgba(242,99,42,.35); } 100% { box-shadow: none; } }
 .sim-mode { display: flex; align-items: center; gap: 12px; }.sim-mode b { font: 500 18px Georgia, serif; }.sim-mode span { color: var(--muted); font-size: 9px; }
+.calculation-viz { margin: 18px 0; border: 1px solid #8da095; background: #e7ebe5; }
+.calculation-viz__head { min-height: 58px; padding: 13px 16px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid #8da095; background: var(--green); color: #fff; }
+.calculation-viz__head span { color: #a9c0b6; font: 8px var(--mono); letter-spacing: .12em; }.calculation-viz__head h4 { margin: 3px 0 0; font: 500 19px Georgia, serif; }.calculation-viz__head p { max-width: 340px; color: #c9d9d2; font-size: 9px; text-align: right; }
+.tensor-flow { padding: 22px 18px; display: grid; grid-template-columns: minmax(0, 1fr) 150px minmax(0, 1fr); gap: 18px; align-items: center; background-image: linear-gradient(rgba(26,71,55,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(26,71,55,.055) 1px, transparent 1px); background-size: 20px 20px; }
+.tensor-side { min-width: 0; display: grid; gap: 12px; }.tensor-side > small { color: var(--orange-dark); font: 700 9px var(--mono); letter-spacing: .09em; }
+.tensor-visual { min-width: 0; padding: 10px; border: 1px solid #aebbb4; background: rgba(250,248,242,.96); box-shadow: 3px 3px 0 rgba(26,71,55,.1); }
+.tensor-visual > header { margin-bottom: 8px; display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }.tensor-visual > header b { font-size: 10px; }.tensor-visual > header code { color: var(--muted); font: 8px var(--mono); }
+.tensor-matrix { display: grid; width: fit-content; max-width: 100%; border-top: 1px solid #aebbb4; border-left: 1px solid #aebbb4; }
+.tensor-matrix > span { min-width: 31px; min-height: 31px; padding: 4px; display: grid; place-items: center; border-right: 1px solid #aebbb4; border-bottom: 1px solid #aebbb4; background: #f8f5ec; color: #26332e; font: 9px var(--mono); transition: background .2s, color .2s, transform .2s; }
+.tensor-matrix > span.is-active, .tensor-scalar.is-active { position: relative; z-index: 2; background: var(--orange); color: #fff; transform: scale(1.07); box-shadow: 0 0 0 2px #fff, 0 0 0 3px var(--orange-dark); }
+.tensor-matrix > .tensor-more { color: var(--muted); background: #eae6dc; }
+.tensor-scalar { width: 70px; height: 52px; display: grid; place-items: center; border: 1px solid #aebbb4; background: #f8f5ec; font: 600 14px var(--mono); }
+.tensor-cuboid { min-height: 130px; position: relative; padding: 20px 0 0 3px; perspective: 700px; }
+.tensor-plane { position: absolute; left: 0; bottom: 0; padding: 7px; border: 1px solid var(--green); background: rgba(247,244,234,.94); box-shadow: 5px -5px 0 rgba(26,71,55,.12); }
+.tensor-plane::before { content: ""; position: absolute; left: 5px; right: -6px; top: -6px; height: 5px; background: rgba(26,71,55,.24); transform: skewX(-45deg); transform-origin: bottom; }
+.tensor-plane::after { content: ""; position: absolute; top: -3px; right: -6px; bottom: 4px; width: 5px; background: rgba(26,71,55,.18); transform: skewY(-45deg); transform-origin: left; }
+.tensor-plane em { display: block; margin-bottom: 4px; color: var(--green); font: normal 7px var(--mono); }.tensor-depth-more { position: absolute; right: 0; top: 0; color: var(--muted); font: 8px var(--mono); }
+.operator-node { min-height: 125px; padding: 16px 10px; display: grid; place-items: center; align-content: center; gap: 10px; border: 1px solid var(--orange); background: #f4e5cd; text-align: center; box-shadow: 4px 4px 0 rgba(163,70,31,.2); }
+.operator-node span { color: var(--orange-dark); font: 700 11px var(--mono); overflow-wrap: anywhere; }.operator-node strong { font: 500 13px Georgia, serif; }.operator-node i { display: grid; place-items: center; width: 31px; height: 31px; border-radius: 50%; background: var(--orange); color: #fff; font-style: normal; }
+.process-stepper { padding: 14px 16px 16px; border-top: 1px solid #8da095; background: #f6f3eb; }
+.stepper-controls { display: flex; gap: 7px; }.stepper-controls button { padding: 7px 10px; border: 1px solid var(--green); background: transparent; color: var(--green); font-size: 9px; cursor: pointer; }.stepper-controls button:hover:not(:disabled), .stepper-controls button.is-playing { background: var(--green); color: #fff; }.stepper-controls button:disabled { opacity: .35; cursor: default; }
+.stepper-copy { margin-top: 11px; display: grid; grid-template-columns: 48px 1fr; gap: 10px; align-items: center; }.stepper-copy span { padding: 6px; background: var(--orange); color: #fff; text-align: center; font: 8px var(--mono); }.stepper-copy p { color: #25332d; font: 10px/1.65 var(--mono); }
+.process-stepper input[type="range"] { width: 100%; margin-top: 11px; accent-color: var(--orange); }
 .trace-row { display: grid; grid-template-columns: repeat(3, 1fr); margin: 17px 0; }
 .trace-row > div { padding: 10px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 22px 1fr; gap: 7px; align-items: center; }
 .trace-row > div + div { border-left: 1px solid var(--line); }.trace-row span { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; background: var(--green); color: #fff; font: 9px var(--mono); }.trace-row p { font-size: 9px; }
@@ -266,6 +289,7 @@ footer p { color: var(--muted); font-size: 10px; }
   .coverage-banner, .docs-atlas { margin-inline: 20px; }
   .docs-atlas__intro { grid-template-columns: 1fr; }.docs-layout { grid-template-columns: 180px 1fr; }.api-inspector { grid-column: 1 / -1; border-top: 1px solid var(--line); }.docs-results { border-right: 0; }
   .deep-vars { grid-template-columns: 1fr 1fr; }
+  .tensor-flow { grid-template-columns: 1fr; }.operator-node { min-height: auto; }.operator-node i { transform: rotate(90deg); }
 }
 
 @media (max-width: 720px) {
@@ -284,7 +308,7 @@ footer p { color: var(--muted); font-size: 10px; }
   .path { margin: 28px 12px; padding: 30px 20px; grid-template-columns: 1fr; gap: 25px; }.path ol { grid-template-columns: 1fr; gap: 10px; }.path ol::before { top: 5%; bottom: 5%; left: 16px; right: auto; border-top: 0; border-left: 1px dashed #769386; }.path li { grid-template-columns: 35px 1fr; justify-items: start; text-align: left; }
   .docs-atlas { margin: 30px 12px 0; }.docs-atlas__intro { padding: 28px 20px; }.docs-atlas__stats { grid-template-columns: 1fr 1fr 1fr; }.docs-atlas__stats > div { min-width: 0; padding: 10px; }.docs-atlas__stats strong { font-size: 18px; }
   .docs-toolbar { grid-template-columns: 1fr; }.docs-toolbar select { min-height: 38px; }.docs-layout { grid-template-columns: 1fr; }.docs-groups { max-height: 185px; overflow-y: auto; border-right: 0; border-bottom: 1px solid var(--line); }.api-table__header, .api-table > button { grid-template-columns: minmax(170px, 1fr) 48px; }.api-table__header span:last-child, .api-table > button p { display: none; }
-  .deep-lab { padding: 22px 12px; }.deep-lab__grid { grid-template-columns: 1fr; }.deep-card--wide { grid-column: 1; }.deep-vars { grid-template-columns: 1fr; }.trace-row { grid-template-columns: 1fr; }.trace-row > div + div { border-left: 0; border-top: 0; }
+  .deep-lab { padding: 22px 12px; }.deep-lab__grid { grid-template-columns: 1fr; }.deep-card--wide { grid-column: 1; }.deep-vars { grid-template-columns: 1fr; }.trace-row { grid-template-columns: 1fr; }.trace-row > div + div { border-left: 0; border-top: 0; }.calculation-viz__head { align-items: flex-start; flex-direction: column; gap: 5px; }.calculation-viz__head p { text-align: left; }.tensor-flow { padding: 16px 10px; }.stepper-controls { display: grid; grid-template-columns: 1fr 1fr 1fr; }.stepper-controls button { padding-inline: 4px; }.stepper-copy { grid-template-columns: 1fr; }
   footer { margin-inline: 12px; display: grid; gap: 12px; }
 }
 
