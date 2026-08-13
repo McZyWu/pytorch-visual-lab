@@ -17,6 +17,9 @@ type FormulaSpec = { latex: string; spoken: string; explanation: string; symbols
 type PositionTerm = { inputKey: string; inputIndex: number; inputCoord: string; inputValue: number; parameterKey?: string; parameterIndex?: number; parameterCoord?: string; parameterValue?: number; result: number; operator: string };
 type PositionDetail = { title: string; outputCoord: string; outputValue: number | boolean; terms: PositionTerm[]; bias?: number; rule: string; aggregation?: "sum" | "max" | "mean" | "direct" };
 type ComparisonSpec = { title: string; intro: string; columns: string[]; rows: Array<{ name: string; api?: string; cells: string[] }>; note: string };
+type ConvDimensionDemo = { dimension: 1 | 2 | 3; name: string; axisNames: string[]; inputShape: number[]; input: number[]; kernelShape: number[]; kernel: number[]; stride: number[]; padding: number[]; dilation: number[]; description: string };
+type ConvDemoTerm = { inputCoord: number[]; kernelCoord: number[]; inputValue: number; kernelValue: number; product: number; inside: boolean };
+type ConvDemoPosition = { outputCoord: number[]; origin: number[]; value: number; terms: ConvDemoTerm[] };
 
 const entries = apiIndex as ApiEntry[];
 const groupCounts = Object.entries(entries.reduce<Record<string, number>>((all, item) => {
@@ -252,11 +255,11 @@ function subcategoryOf(entry: ApiEntry) {
 
 function comparisonOf(entry: ApiEntry): ComparisonSpec | null {
   const family=familyOf(entry);
-  if (family === "convolution") return {title:"Conv1d、Conv2d、Conv3d 到底差在哪里？",intro:"三者的计算规律完全相同：在每个输出位置，对所有输入通道的局部窗口与权重逐项相乘、求和、加偏置；区别只是空间轴数量。",columns:["算法","典型输入 shape","权重 shape","滑动方向","同值演示（stride=1, padding=0）","结果"],rows:[
-    {name:"Conv1d",api:"torch.nn.Conv1d",cells:["(N, C_in, L)","(C_out, C_in/groups, K)","沿长度 L","X=[1,2,3,4], W=[1,1]；第0格=1×1+2×1","[3,5,7]"]},
-    {name:"Conv2d",api:"torch.nn.Conv2d",cells:["(N, C_in, H, W)","(C_out, C_in/groups, K_H, K_W)","沿高度 H 和宽度 W","X=[[1,2],[3,4]], W=全1的2×2核；唯一格=1+2+3+4","[[10]]"]},
-    {name:"Conv3d",api:"torch.nn.Conv3d",cells:["(N, C_in, D, H, W)","(C_out, C_in/groups, K_D, K_H, K_W)","沿深度 D、高度 H、宽度 W","两个相同切片 [[1,2],[3,4]]，2×2×2核全1","[[[20]]]"]},
-  ],note:"1D/2D/3D 不是输入张量总维数，而是卷积核滑动的空间维数；最前面仍可有 batch 和 channel 维。"};
+  if (family === "convolution") return {title:"Conv1d、Conv2d、Conv3d 到底差在哪里？",intro:"数字 1/2/3 指卷积核滑动的空间轴数量，不是输入张量的总维数。三者都会固定 batch 与输出通道，在全部输入通道上做局部乘加。下方可逐位置查看窗口如何移动。",columns:["算法","允许的输入 shape","空间轴","权重 shape","参数写法","输出空间 shape"],rows:[
+    {name:"Conv1d",api:"torch.nn.Conv1d",cells:["无 batch：(C_in,L)；有 batch：(N,C_in,L)","L（序列长度）","(C_out,C_in/groups,K)","K、stride、padding、dilation：int 或长度1 tuple","(L_out)"]},
+    {name:"Conv2d",api:"torch.nn.Conv2d",cells:["无 batch：(C_in,H,W)；有 batch：(N,C_in,H,W)","H（高）、W（宽）","(C_out,C_in/groups,K_H,K_W)","int 或 (H,W) 二元 tuple","(H_out,W_out)"]},
+    {name:"Conv3d",api:"torch.nn.Conv3d",cells:["无 batch：(C_in,D,H,W)；有 batch：(N,C_in,D,H,W)","D（深度）、H（高）、W（宽）","(C_out,C_in/groups,K_D,K_H,K_W)","int 或 (D,H,W) 三元 tuple","(D_out,H_out,W_out)"]},
+  ],note:"N 和空间尺寸不要求固定为某个数，但张量维数、通道数和 groups 必须合法，而且每个轴的有效卷积核不能大于填充后的输入。"};
   if (family === "pooling") return {title:"池化算法区别",intro:"池化不混合通道，只在每个通道的局部窗口内归约。",columns:["算法","输入/输出 shape","窗口规则","同一输入 [[1,2],[3,4]]","适合场景"],rows:[
     {name:"MaxPool2d",api:"torch.nn.MaxPool2d",cells:["(N,C,H,W) → (N,C,H_out,W_out)","窗口内取最大值","kernel=2 → [[4]]","保留最显著响应"]},
     {name:"AvgPool2d",api:"torch.nn.AvgPool2d",cells:["形状规则与 MaxPool2d 相同","窗口内求和再除以元素数","kernel=2 → [[2.5]]","平滑与整体统计"]},
@@ -294,7 +297,47 @@ function comparisonOf(entry: ApiEntry): ComparisonSpec | null {
 
 function AlgorithmComparison({ entry, onSelect }: { entry: ApiEntry; onSelect: (entry: ApiEntry) => void }) {
   const comparison=comparisonOf(entry); if(!comparison)return null;
-  return <section className="deep-card deep-card--wide comparison-card"><small>扩展 · 同类算法区别</small><header><div><h4>{comparison.title}</h4><p>{comparison.intro}</p></div><span>{subcategoryOf(entry)}</span></header><div className="comparison-scroll"><table><thead><tr>{comparison.columns.map(column=><th key={column}>{column}</th>)}</tr></thead><tbody>{comparison.rows.map(row=>{const target=row.api?entries.find(item=>item.name===row.api):undefined;return <tr className={cleanLeaf(entry)===row.name.toLowerCase()?"is-current":""} key={row.name}><th><b>{row.name}</b>{target&&<button type="button" onClick={()=>onSelect(target)}>进入实验 →</button>}</th>{row.cells.map((cell,index)=><td key={`${row.name}-${index}`}>{cell}</td>)}</tr>;})}</tbody></table></div><p className="comparison-note"><b>选择要点：</b>{comparison.note}</p></section>;
+  return <section className="deep-card deep-card--wide comparison-card"><small>扩展 · 同类算法区别</small><header><div><h4>{comparison.title}</h4><p>{comparison.intro}</p></div><span>{subcategoryOf(entry)}</span></header><div className="comparison-scroll"><table><thead><tr>{comparison.columns.map(column=><th key={column}>{column}</th>)}</tr></thead><tbody>{comparison.rows.map(row=>{const target=row.api?entries.find(item=>item.name===row.api):undefined;return <tr className={cleanLeaf(entry)===row.name.toLowerCase()?"is-current":""} key={row.name}><th><b>{row.name}</b>{target&&<button type="button" onClick={()=>onSelect(target)}>进入实验 →</button>}</th>{row.cells.map((cell,index)=><td key={`${row.name}-${index}`}>{cell}</td>)}</tr>;})}</tbody></table></div>{familyOf(entry)==="convolution"&&<ConvolutionDimensionLab key={entry.name} entry={entry}/>}<p className="comparison-note"><b>选择要点：</b>{comparison.note}</p></section>;
+}
+
+const convDimensionDemos: ConvDimensionDemo[] = [
+  {dimension:1,name:"Conv1d",axisNames:["L"],inputShape:[7],input:[2,1,3,0,4,2,5],kernelShape:[3],kernel:[1,-1,2],stride:[2],padding:[1],dilation:[1],description:"长度轴 L 上从左向右。这里 stride=2，所以窗口左边界每次跨 2 格；padding=1 让首尾窗口包含虚拟 0。"},
+  {dimension:2,name:"Conv2d",axisNames:["H","W"],inputShape:[4,5],input:[1,2,0,1,3,4,1,2,5,0,2,3,1,0,4,1,0,2,3,5],kernelShape:[2,3],kernel:[1,0,-1,2,0,-2],stride:[1,2],padding:[0,0],dilation:[1,1],description:"先沿 W 从左到右扫完一行，再沿 H 向下换行。这里 stride=(1,2)，所以横向每步跨 2 列、纵向每步跨 1 行。"},
+  {dimension:3,name:"Conv3d",axisNames:["D","H","W"],inputShape:[3,3,4],input:[1,0,2,1,2,1,0,3,1,2,1,0,0,2,1,1,1,0,2,2,3,1,0,1,2,1,0,2,0,3,1,0,1,0,2,3],kernelShape:[2,2,2],kernel:[1,0,0,-1,0,1,-1,0],stride:[1,1,2],padding:[0,0,0],dilation:[1,1,1],description:"W 是最快变化轴：先向右；一行扫完后 H 向下；一层扫完后 D 向后切到下一深度层。stride=(1,1,2)。"},
+];
+
+function coordinatesOf(shape:number[]):number[][] { if(!shape.length)return [[]];return Array.from({length:shape[0]},(_,i)=>coordinatesOf(shape.slice(1)).map(rest=>[i,...rest])).flat(); }
+function coordFlatIndex(shape:number[],coord:number[]){let index=0;for(let i=0;i<shape.length;i++)index=index*shape[i]+coord[i];return index;}
+function coordLabel(coord:number[],axes:string[]){return coord.map((value,index)=>`${axes[index].toLowerCase()}=${value}`).join(",");}
+function calculateConvDemo(demo:ConvDimensionDemo){
+  const outputShape=demo.inputShape.map((size,axis)=>Math.floor((size+2*demo.padding[axis]-demo.dilation[axis]*(demo.kernelShape[axis]-1)-1)/demo.stride[axis]+1));
+  const positions:ConvDemoPosition[]=coordinatesOf(outputShape).map(outputCoord=>{const origin=outputCoord.map((value,axis)=>value*demo.stride[axis]-demo.padding[axis]);const terms=coordinatesOf(demo.kernelShape).map(kernelCoord=>{const inputCoord=kernelCoord.map((value,axis)=>origin[axis]+value*demo.dilation[axis]);const inside=inputCoord.every((value,axis)=>value>=0&&value<demo.inputShape[axis]);const inputValue=inside?demo.input[coordFlatIndex(demo.inputShape,inputCoord)]:0;const kernelValue=demo.kernel[coordFlatIndex(demo.kernelShape,kernelCoord)];return {inputCoord,kernelCoord,inputValue,kernelValue,product:inputValue*kernelValue,inside};});return {outputCoord,origin,terms,value:terms.reduce((sum,term)=>sum+term.product,0)};});
+  return {outputShape,positions};
+}
+
+function ConvGrid({shape,values,axes,activeCoords=[],outputCoord,includePadding=false,padding=[]}:{shape:number[];values:number[];axes:string[];activeCoords?:number[][];outputCoord?:number[];includePadding?:boolean;padding?:number[]}){
+  const isActive=(coord:number[])=>activeCoords.some(candidate=>candidate.length===coord.length&&candidate.every((value,index)=>value===coord[index]));
+  if(shape.length===1){const start=includePadding?-padding[0]:0,end=shape[0]+(includePadding?padding[0]:0);return <div className="conv-vector">{Array.from({length:end-start},(_,offset)=>start+offset).map(index=>{const outside=index<0||index>=shape[0],active=isActive([index]),value=outside?0:values[index];return <div className={`${active?"is-active":""} ${outside?"is-padding":""}`} key={index}><small>{axes[0].toLowerCase()}={index}</small><b>{value}</b></div>;})}</div>}
+  const depth=shape.length===3?shape[0]:1,rows=shape.length===3?shape[1]:shape[0],cols=shape.length===3?shape[2]:shape[1];
+  return <div className="conv-planes">{Array.from({length:depth},(_,layer)=><section key={layer}><small>{shape.length===3?`${axes[0]}=${layer}`:"单个空间平面"}</small><div className="conv-matrix" style={{gridTemplateColumns:`repeat(${cols}, minmax(34px,1fr))`}}>{Array.from({length:rows*cols},(_,flatIndex)=>{const row=Math.floor(flatIndex/cols),col=flatIndex%cols,coord=shape.length===3?[layer,row,col]:[row,col],active=isActive(coord),selected=outputCoord&&outputCoord.length===coord.length&&outputCoord.every((value,index)=>value===coord[index]);return <div className={`${active?"is-active":""} ${selected?"is-output":""}`} key={coord.join("-")}><small>{coord.join(",")}</small><b>{values[coordFlatIndex(shape,coord)]}</b></div>;})}</div></section>)}</div>;
+}
+
+function ConvolutionDimensionLab({entry}:{entry:ApiEntry}){
+  const requested=cleanLeaf(entry).includes("3d")?3:cleanLeaf(entry).includes("2d")?2:1;
+  const [dimension,setDimension]=useState<1|2|3>(requested);const [step,setStep]=useState(0);
+  const demo=convDimensionDemos.find(item=>item.dimension===dimension)??convDimensionDemos[0],calculation=calculateConvDemo(demo),current=calculation.positions[Math.min(step,calculation.positions.length-1)],next=calculation.positions[Math.min(step+1,calculation.positions.length-1)];
+  const outputValues=calculation.positions.map(position=>position.value),activeInput=current.terms.filter(term=>term.inside).map(term=>term.inputCoord),activeKernel=current.terms.map(term=>term.kernelCoord);
+  const axisCalculation=demo.axisNames.map((axis,index)=>`${axis}_out = floor((${demo.inputShape[index]} + 2×${demo.padding[index]} − ${demo.dilation[index]}×(${demo.kernelShape[index]}−1) − 1) / ${demo.stride[index]} + 1) = ${calculation.outputShape[index]}`);
+  return <div className="conv-dimension-lab"><header><div><small>交互式滑窗演示</small><h5>窗口到底沿哪个方向移动？</h5></div><div className="conv-dimension-tabs" role="group" aria-label="选择卷积维度">{convDimensionDemos.map(item=><button className={dimension===item.dimension?"active":""} aria-pressed={dimension===item.dimension} key={item.name} onClick={()=>{setDimension(item.dimension);setStep(0);}}>{item.name}</button>)}</div></header>
+    <div className="conv-axis-order"><b>实际扫描顺序</b><span>{dimension===1?"L：左 → 右":dimension===2?"W：左 → 右（内层循环） → H：上 → 下（换行）":"W：左 → 右（最快） → H：上 → 下 → D：前 → 后（最慢）"}</span><p>{demo.description}</p></div>
+    <div className="conv-shape-summary"><div><small>示例输入</small><b>(N=1, C_in=1, {demo.axisNames.map((axis,index)=>`${axis}=${demo.inputShape[index]}`).join(", ")})</b></div><div><small>卷积核</small><b>(C_out=1, C_in=1, {demo.kernelShape.join("×")})</b></div><div><small>参数</small><b>stride={JSON.stringify(demo.stride)} · padding={JSON.stringify(demo.padding)} · dilation={JSON.stringify(demo.dilation)}</b></div><div><small>输出</small><b>(1, 1, {calculation.outputShape.join(", ")}) · 共 {calculation.positions.length} 个位置</b></div></div>
+    <div className="conv-step-picker"><button disabled={step===0} onClick={()=>setStep(value=>Math.max(0,value-1))}>← 上一位置</button><div>{calculation.positions.map((position,index)=><button className={step===index?"active":""} aria-label={`查看输出位置 ${position.outputCoord.join(",")}`} key={position.outputCoord.join("-")} onClick={()=>setStep(index)}>Y[{position.outputCoord.join(",")}]</button>)}</div><button disabled={step===calculation.positions.length-1} onClick={()=>setStep(value=>Math.min(calculation.positions.length-1,value+1))}>下一位置 →</button></div>
+    <div className="conv-current-move"><b>第 {step+1}/{calculation.positions.length} 步：计算 Y[{current.outputCoord.join(",")}]</b><span>窗口左上/前起点：({coordLabel(current.origin,demo.axisNames)})</span>{step<calculation.positions.length-1&&<span>下一步：Y[{next.outputCoord.join(",")}]，起点变为 ({coordLabel(next.origin,demo.axisNames)})</span>}</div>
+    <div className="conv-demo-flow"><section><h6>输入 X · 橙色是当前窗口</h6><ConvGrid shape={demo.inputShape} values={demo.input} axes={demo.axisNames} activeCoords={activeInput} includePadding={dimension===1} padding={demo.padding}/></section><div className="conv-demo-arrow"><b>×</b><span>逐项乘加</span></div><section><h6>卷积核 W · 对应权重</h6><ConvGrid shape={demo.kernelShape} values={demo.kernel} axes={demo.axisNames.map(axis=>`K${axis}`)} activeCoords={activeKernel}/></section><div className="conv-demo-arrow"><b>=</b><span>写入当前位置</span></div><section><h6>输出 Y · 绿色是已计算位置</h6><ConvGrid shape={calculation.outputShape} values={outputValues} axes={demo.axisNames} outputCoord={current.outputCoord}/></section></div>
+    <div className="conv-equation"><small>当前位置完整算式（坐标明确对应上方格子）</small><div>{current.terms.map((term,index)=><span className={!term.inside?"is-padding":""} key={`${term.inputCoord.join("-")}-${index}`}><b>X[{term.inputCoord.join(",")}]={term.inputValue}</b> × W[{term.kernelCoord.join(",")}]={term.kernelValue} = {term.product}{!term.inside&&<i>padding</i>}</span>)}</div><strong>{current.terms.map(term=>term.product).join(" + ")} = {current.value}</strong></div>
+    <div className="conv-output-formula"><small>输出尺寸逐轴代入</small>{axisCalculation.map(line=><code key={line}>{line}</code>)}</div>
+    <div className="conv-input-limits"><h5>输入 shape 是否有限制？有，但空间大小不是固定值</h5><div><section><b>① 张量维数必须正确</b><p>Conv1d 接 2D/3D，Conv2d 接 3D/4D，Conv3d 接 4D/5D；少一维表示省略 batch，不能省略 channel。</p></section><section><b>② 通道必须对上</b><p>input.shape 的 C 必须等于 in_channels；in_channels 和 out_channels 都必须能被 groups 整除。</p></section><section><b>③ 每个空间轴必须放得下有效卷积核</b><p>S_in + 2p ≥ d×(K−1)+1。右侧是有效核尺寸；不满足时该轴无法产生合法输出。</p></section><section><b>④ 输出尺寸由参数决定</b><p>S_out=floor((S_in+2p−d×(K−1)−1)/s+1)，每个 L / H / W / D 轴分别计算。</p></section><section><b>⑤ int 与 tuple 的含义不同</b><p>Conv2d 中 kernel_size=3 表示 (3,3)，而 (3,5) 表示高3、宽5；Conv3d 的 tuple 顺序是 (D,H,W)。</p></section><section><b>⑥ same 不是任意 stride</b><p>padding=&quot;same&quot; 会保持空间 shape，但官方接口要求 stride=1；padding=&quot;valid&quot; 等价于不填充。</p></section></div></div>
+  </div>;
 }
 
 function seededValues(entry: ApiEntry) {

@@ -40,8 +40,12 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(browser, /二级 · 细分类/);
   assert.match(browser, /同类算法区别/);
   assert.match(browser, /Conv1d、Conv2d、Conv3d/);
-  assert.match(browser, /同值演示/);
   assert.match(browser, /subcategoryOf/);
+  assert.match(browser, /交互式滑窗演示/);
+  assert.match(browser, /实际扫描顺序/);
+  assert.match(browser, /输入 shape 是否有限制/);
+  assert.match(browser, /S_in \+ 2p/);
+  assert.match(browser, /padding=&quot;same&quot;/);
   assert.doesNotMatch(browser, /output_contract|接口生命周期|返回值以官方签名为准/);
   assert.ok(JSON.parse(index).length > 9000);
   assert.match(layout, /lang="zh-CN"/);
