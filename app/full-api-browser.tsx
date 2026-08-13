@@ -16,6 +16,7 @@ type TensorItem = { key: string; label: string; value: unknown };
 type FormulaSpec = { latex: string; spoken: string; explanation: string; symbols: Array<{ symbol: string; meaning: string }> };
 type PositionTerm = { inputKey: string; inputIndex: number; inputCoord: string; inputValue: number; parameterKey?: string; parameterIndex?: number; parameterCoord?: string; parameterValue?: number; result: number; operator: string };
 type PositionDetail = { title: string; outputCoord: string; outputValue: number | boolean; terms: PositionTerm[]; bias?: number; rule: string; aggregation?: "sum" | "max" | "mean" | "direct" };
+type ComparisonSpec = { title: string; intro: string; columns: string[]; rows: Array<{ name: string; api?: string; cells: string[] }>; note: string };
 
 const entries = apiIndex as ApiEntry[];
 const groupCounts = Object.entries(entries.reduce<Record<string, number>>((all, item) => {
@@ -188,6 +189,112 @@ function familyOf(entry: ApiEntry) {
   if (/^set_|enable|disable|config/.test(n) || entry.type === "data" || entry.type === "attribute" || entry.type === "property") return "state";
   if (entry.type === "class" || entry.type === "module") return "object";
   return "api_behavior";
+}
+
+const familyLabels: Record<string, string> = {
+  autograd:"反向传播与计算图",cross_entropy:"多分类损失",mse:"回归损失",distance_loss:"距离与鲁棒损失",bce:"二分类损失",softmax:"概率归一化",
+  activation:"非线性激活",convolution:"卷积与转置卷积",pooling:"局部与自适应池化",linear:"全连接与双线性层",matmul:"向量与矩阵乘法",reshape:"重塑与展平",
+  squeeze:"增删单维",transpose:"维度交换",combine:"拼接与堆叠",split:"拆分与解绑",reduction:"统计与归约",sorting:"排序与 Top-K",counting:"去重、计数与直方图",
+  selection:"条件选择",indexing:"索引、Gather 与 Scatter",binary:"二元逐元素运算",comparison:"比较与近似判断",unary:"一元数学函数",sequence:"等差与等距序列",creation:"张量创建与填充",
+  random:"随机采样",fft:"傅里叶变换",linalg:"线性代数",optimizer:"参数优化与调度",distribution:"概率分布与变换",dataloader:"数据集、采样与批处理",inspection:"形状与存储检查",
+  copy_state:"复制、视图与梯度状态",device:"设备与数据类型",predicate:"能力与状态判断",state:"配置、属性与开关",object:"类、容器与对象",api_behavior:"其他接口与工具",
+};
+
+function subcategoryOf(entry: ApiEntry) {
+  const family=familyOf(entry), path=entry.name.toLowerCase(), leaf=cleanLeaf(entry);
+  if (!["api_behavior","object","state","predicate"].includes(family)) return familyLabels[family]??"其他接口与工具";
+  if (entry.group === "神经网络模块" || entry.group === "神经网络函数") {
+    if (/batchnorm|layernorm|groupnorm|instancenorm|rmsnorm|normalize|normalization/.test(path)) return "归一化层";
+    if (/dropout|droppath|stochasticdepth/.test(path)) return "随机失活与正则化";
+    if (/attention|transformer|multihead/.test(path)) return "注意力与 Transformer";
+    if (/\brnn|lstm|gru|recurrent/.test(path)) return "循环神经网络";
+    if (/embedding/.test(path)) return "嵌入与查表";
+    if (/loss|criterion/.test(path)) return "其他损失函数";
+    if (/sequential|modulelist|moduledict|parameterlist|parameterdict|container/.test(path)) return "模块容器";
+    if (/padding|pad/.test(path)) return "填充与边界";
+    if (/upsampl|interpol|pixelshuffle|fold|unfold/.test(path)) return "采样与空间重排";
+    if (/init|weight_norm|spectral_norm|parametr/.test(path)) return "参数初始化与参数化";
+    return entry.type === "class" ? "网络层与模块基类" : "其他神经网络函数";
+  }
+  if (entry.group === "稀疏张量") {
+    if (/coo/.test(path)) return "COO 稀疏格式"; if (/csr/.test(path)) return "CSR 稀疏格式"; if (/csc/.test(path)) return "CSC 稀疏格式"; if (/bsr/.test(path)) return "BSR 块稀疏格式"; if (/bsc/.test(path)) return "BSC 块稀疏格式";
+    if (/to_sparse|to_dense|convert|compressed/.test(path)) return "稀疏格式转换"; if (/mm|matmul|addmm|sampled_addmm|solve/.test(path)) return "稀疏线性代数"; if (/softmax|sum|log_softmax/.test(path)) return "稀疏归约与概率";
+    return "稀疏存储与索引";
+  }
+  if (entry.group === "分布式训练") {
+    if (/all_reduce|all_gather|all_to_all|broadcast|reduce_scatter|gather|scatter/.test(path)) return "集合通信"; if (/send|recv|isend|irecv/.test(path)) return "点对点通信"; if (/processgroup|new_group|init_process_group|destroy_process_group/.test(path)) return "进程组管理";
+    if (/fsdp|fully_sharded/.test(path)) return "FSDP 参数分片"; if (/distributed\.checkpoint|dcp/.test(path)) return "分布式检查点"; if (/rpc|rref/.test(path)) return "RPC 与远程引用"; if (/elastic|rendezvous/.test(path)) return "弹性训练与会合"; if (/dtensor|device_mesh/.test(path)) return "DTensor 与设备网格";
+    return "分布式状态与工具";
+  }
+  if (entry.group === "量化") {
+    if (/observer/.test(path)) return "量化观察器"; if (/fake_quant/.test(path)) return "伪量化"; if (/quantize_fx|prepare_fx|convert_fx|fx/.test(path)) return "FX 图模式量化"; if (/qat/.test(path)) return "量化感知训练"; if (/backend|config|qconfig/.test(path)) return "量化配置与后端"; if (/quantized/.test(path)) return "量化算子与模块";
+    return "量化流程与工具";
+  }
+  if (entry.group === "优化器") {
+    if (/lr_scheduler|scheduler|warmup|anneal|cyclic|plateau/.test(path)) return "学习率调度器"; if (/adam|adagrad|adadelta|rmsprop|radam|nadam/.test(path)) return "自适应优化器"; if (/sgd|asgd|lbfgs|rprop/.test(path)) return "基础与二阶优化器"; return "优化器状态与钩子";
+  }
+  if (entry.group === "概率分布") {
+    if (/constraint/.test(path)) return "参数约束"; if (/transform/.test(path)) return "随机变量变换"; if (/kl_divergence|register_kl/.test(path)) return "KL 散度"; if (/multivariate|wishart|lkj|lowrank/.test(path)) return "多元分布"; if (/categorical|bernoulli|binomial|poisson|geometric/.test(path)) return "离散分布"; return "连续分布与分布基类";
+  }
+  if (entry.group === "设备与加速") {
+    if (/cuda/.test(path)) return "CUDA 设备与流"; if (/xpu/.test(path)) return "XPU 设备"; if (/mps/.test(path)) return "Apple MPS"; if (/backends/.test(path)) return "计算后端配置"; if (/memory/.test(path)) return "显存与内存管理"; return "设备能力与运行时";
+  }
+  if (["模型导出","编译与导出"].includes(entry.group)) { if (/onnx/.test(path)) return "ONNX 导出"; if (/export/.test(path)) return "Export 图与动态形状"; if (/compile|compiler|dynamo/.test(path)) return "编译与图捕获"; if (/jit|script|trace/.test(path)) return "TorchScript"; return "部署格式与转换"; }
+  if (entry.group === "数据加载") { if (/sampler/.test(path)) return "采样器"; if (/dataset|datapipe/.test(path)) return "数据集与 DataPipe"; if (/collate/.test(path)) return "样本合批"; return "DataLoader 与工作进程"; }
+  if (entry.group === "自动微分") { if (/forward_ad|dual/.test(path)) return "前向模式自动微分"; if (/functional|jacobian|hessian|jvp|vjp/.test(path)) return "雅可比与高阶导数"; if (/profiler|anomaly/.test(path)) return "梯度诊断"; return "反向传播与计算图"; }
+  if (entry.group === "性能分析") return /memory/.test(path)?"内存分析":"CPU 与 GPU 性能分析";
+  if (entry.group === "混合精度") return /gradscaler|grad_scaler/.test(path)?"梯度缩放":"自动混合精度";
+  if (entry.group === "特殊函数") return /bessel/.test(leaf)?"贝塞尔函数":/gamma|digamma|polygamma/.test(leaf)?"Gamma 函数族":"特殊数学函数";
+  if (entry.group === "工具组件") return /benchmark/.test(path)?"基准测试":/cpp_extension/.test(path)?"C++ 与 CUDA 扩展":/hub/.test(path)?"模型 Hub":"实用工具与环境";
+  if (entry.group === "核心运算" || entry.group === "Tensor 方法") return familyLabels[family]??(entry.type === "method"?"Tensor 高级方法":"核心工具与元数据");
+  return familyLabels[family]??(entry.type === "class"?"类与对象":entry.type === "function"?"函数与运算":"属性、常量与状态");
+}
+
+function comparisonOf(entry: ApiEntry): ComparisonSpec | null {
+  const family=familyOf(entry);
+  if (family === "convolution") return {title:"Conv1d、Conv2d、Conv3d 到底差在哪里？",intro:"三者的计算规律完全相同：在每个输出位置，对所有输入通道的局部窗口与权重逐项相乘、求和、加偏置；区别只是空间轴数量。",columns:["算法","典型输入 shape","权重 shape","滑动方向","同值演示（stride=1, padding=0）","结果"],rows:[
+    {name:"Conv1d",api:"torch.nn.Conv1d",cells:["(N, C_in, L)","(C_out, C_in/groups, K)","沿长度 L","X=[1,2,3,4], W=[1,1]；第0格=1×1+2×1","[3,5,7]"]},
+    {name:"Conv2d",api:"torch.nn.Conv2d",cells:["(N, C_in, H, W)","(C_out, C_in/groups, K_H, K_W)","沿高度 H 和宽度 W","X=[[1,2],[3,4]], W=全1的2×2核；唯一格=1+2+3+4","[[10]]"]},
+    {name:"Conv3d",api:"torch.nn.Conv3d",cells:["(N, C_in, D, H, W)","(C_out, C_in/groups, K_D, K_H, K_W)","沿深度 D、高度 H、宽度 W","两个相同切片 [[1,2],[3,4]]，2×2×2核全1","[[[20]]]"]},
+  ],note:"1D/2D/3D 不是输入张量总维数，而是卷积核滑动的空间维数；最前面仍可有 batch 和 channel 维。"};
+  if (family === "pooling") return {title:"池化算法区别",intro:"池化不混合通道，只在每个通道的局部窗口内归约。",columns:["算法","输入/输出 shape","窗口规则","同一输入 [[1,2],[3,4]]","适合场景"],rows:[
+    {name:"MaxPool2d",api:"torch.nn.MaxPool2d",cells:["(N,C,H,W) → (N,C,H_out,W_out)","窗口内取最大值","kernel=2 → [[4]]","保留最显著响应"]},
+    {name:"AvgPool2d",api:"torch.nn.AvgPool2d",cells:["形状规则与 MaxPool2d 相同","窗口内求和再除以元素数","kernel=2 → [[2.5]]","平滑与整体统计"]},
+    {name:"AdaptiveAvgPool2d",api:"torch.nn.AdaptiveAvgPool2d",cells:["直接指定输出 (H_out,W_out)","自动反推每个输出格覆盖范围","output_size=(1,1) → [[2.5]]","接不同尺寸输入并得到固定尺寸"]},
+  ],note:"MaxPool 的 padding 概念上使用负无穷；AvgPool 通常使用零填充，并由 count_include_pad 决定填充值是否进入除数。"};
+  if (family === "activation") return {title:"常用激活函数区别",intro:"它们都逐元素计算且不改变 shape，但输出范围、零点附近梯度和饱和特性不同。",columns:["算法","公式特征","输出范围","同一输入 [-1,0,1] 的输出","常见用途"],rows:[
+    {name:"ReLU",api:"torch.nn.ReLU",cells:["max(0,x)","[0,+∞)","[0,0,1]","CNN/MLP 默认首选，便宜但负区梯度为0"]},
+    {name:"Sigmoid",api:"torch.nn.Sigmoid",cells:["1/(1+e^-x)","(0,1)","[0.269,0.5,0.731]","二分类概率或门控"]},
+    {name:"Tanh",api:"torch.nn.Tanh",cells:["双曲正切","(-1,1)","[-0.762,0,0.762]","零中心门控、循环网络"]},
+    {name:"GELU",api:"torch.nn.GELU",cells:["x·Φ(x)","约 (-0.17,+∞)","[-0.159,0,0.841]","Transformer 中常用，过渡平滑"]},
+  ],note:"同样输入下输出不同并不代表谁绝对更好；要结合网络结构、梯度传播、计算成本与输出语义选择。"};
+  if (["mse","distance_loss","cross_entropy","bce"].includes(family)) return {title:"损失函数区别",intro:"回归损失比较连续数值，分类损失比较概率或 logits；输入语义不同，不能只看最终数字大小。",columns:["算法","输入要求","逐项计算","同一回归输入 x=[2,0], y=[1,1]","什么时候用"],rows:[
+    {name:"L1Loss",api:"torch.nn.L1Loss",cells:["prediction 与 target 同 shape","|x−y|","mean=1","回归；对异常值相对稳健"]},
+    {name:"MSELoss",api:"torch.nn.MSELoss",cells:["prediction 与 target 同 shape","(x−y)²","mean=1","回归；大误差惩罚更强"]},
+    {name:"HuberLoss",api:"torch.nn.HuberLoss",cells:["prediction 与 target 同 shape","小误差平方，大误差线性","delta=1 → mean=0.5","兼顾平滑梯度与鲁棒性"]},
+    {name:"CrossEntropyLoss",api:"torch.nn.CrossEntropyLoss",cells:["logits: (N,C,...)；target: 类别索引 (N,...)","LogSoftmax + NLLLoss","不适用此回归输入","互斥的 C 类分类"]},
+    {name:"BCEWithLogitsLoss",api:"torch.nn.BCEWithLogitsLoss",cells:["logits 与 0/1 target 同 shape","Sigmoid + BCE 的稳定实现","不适用此回归输入","二分类或多标签分类"]},
+  ],note:"CrossEntropyLoss 的输入应是未归一化 logits，不需要先做 Softmax；BCEWithLogitsLoss 也不需要先做 Sigmoid。"};
+  if (family === "matmul") return {title:"dot、mv、mm、matmul、bmm 区别",intro:"它们都基于乘加，但接受的维数、批处理和广播规则不同。",columns:["算法","输入 shape","输出 shape","同值示例","关键区别"],rows:[
+    {name:"dot",api:"torch.dot",cells:["(K) · (K)","标量","[1,2]·[3,4]=11","只接两个1D向量"]},
+    {name:"mv",api:"torch.mv",cells:["(M,K) · (K)","(M)","[[1,2],[3,4]]·[1,1]=[3,7]","矩阵乘向量"]},
+    {name:"mm",api:"torch.mm",cells:["(M,K) · (K,N)","(M,N)","A·I=A","只接两个2D矩阵，不广播"]},
+    {name:"bmm",api:"torch.bmm",cells:["(B,M,K) · (B,K,N)","(B,M,N)","每个 batch 独立相乘","只接3D批矩阵，不广播"]},
+    {name:"matmul",api:"torch.matmul",cells:["1D/2D/ND 多种组合","依规则决定","2D时与 mm 相同","通用版本；批维支持广播"]},
+  ],note:"核心约束始终是左输入最后一维 K 与右输入倒数第二维 K 相等。"};
+  if (family === "reduction") return {title:"归约算法区别",intro:"归约沿指定 dim 把多个元素合成更少元素；keepdim 决定归约维是否保留为长度1。",columns:["算法","对 x=[1,3,2] 的结果","返回内容","是否可导","常见用途"],rows:[
+    {name:"sum",api:"torch.sum",cells:["6","元素总和","是","累计量、损失求和"]},{name:"mean",api:"torch.mean",cells:["2","算术平均","是","归一化统计"]},{name:"max",api:"torch.max",cells:["3（指定dim时还可返回index=1）","最大值，可带索引","极值处可导","选择最强响应"]},{name:"argmax",api:"torch.argmax",cells:["1","最大值位置索引","否","分类预测标签"]},{name:"prod",api:"torch.prod",cells:["6","元素乘积","是","联合缩放、维度乘积"]},
+  ],note:"不指定 dim 时通常归约全部元素；指定 dim 后，输出 shape 等于输入 shape 删除该维（keepdim=False）。"};
+  if (["reshape","squeeze","transpose","combine","split"].includes(family)) return {title:"形状与维度操作区别",intro:"这些接口大多不改变元素值，但改变 shape、元素位置解释或张量数量。",columns:["算法","元素总数","顺序/位置","是否常为 view","例子"],rows:[
+    {name:"reshape",api:"torch.reshape",cells:["必须不变","线性顺序不变，重新分组","能则 view，不能则复制","[1,2,3,4] → 2×2"]},{name:"view",api:"torch.Tensor.view",cells:["必须不变","线性顺序不变","要求 stride/内存布局兼容","连续张量 4 → 2×2"]},{name:"flatten",api:"torch.flatten",cells:["不变","合并一段连续维","可能是 view","2×2 → 4"]},{name:"transpose",api:"torch.transpose",cells:["不变","交换两个维的索引","通常是 view","2×3 → 3×2"]},{name:"stack",api:"torch.stack",cells:["各输入相加","新增一个维度","新张量","两个(2,3) → (2,2,3)"]},{name:"cat",api:"torch.cat",cells:["各输入相加","沿已有维连接","新张量","两个(2,3)沿dim0 → (4,3)"]},
+  ],note:"reshape/view/flatten 关注同一张量的维度解释；transpose 改变索引映射；stack/cat 组合多个张量。"};
+  if (family === "binary") return {title:"二元逐元素运算区别",intro:"都遵循 broadcasting，区别在每个对应位置使用的数学运算。",columns:["算法","x=[2,4], other=2","结果","风险/注意"],rows:[{name:"add",api:"torch.add",cells:["x+2","[4,6]","整数和浮点均常用"]},{name:"sub",api:"torch.sub",cells:["x−2","[0,2]","注意操作数顺序"]},{name:"mul",api:"torch.mul",cells:["x×2","[4,8]","逐元素乘，不是矩阵乘"]},{name:"div",api:"torch.div",cells:["x÷2","[1,2]","整数输入时关注 rounding_mode"]},{name:"pow",api:"torch.pow",cells:["x²","[4,16]","负底数与非整数指数可能产生 NaN"]}],note:"torch.mul 是逐元素乘法；矩阵乘法应使用 matmul/mm/bmm。"};
+  return null;
+}
+
+function AlgorithmComparison({ entry, onSelect }: { entry: ApiEntry; onSelect: (entry: ApiEntry) => void }) {
+  const comparison=comparisonOf(entry); if(!comparison)return null;
+  return <section className="deep-card deep-card--wide comparison-card"><small>扩展 · 同类算法区别</small><header><div><h4>{comparison.title}</h4><p>{comparison.intro}</p></div><span>{subcategoryOf(entry)}</span></header><div className="comparison-scroll"><table><thead><tr>{comparison.columns.map(column=><th key={column}>{column}</th>)}</tr></thead><tbody>{comparison.rows.map(row=>{const target=row.api?entries.find(item=>item.name===row.api):undefined;return <tr className={cleanLeaf(entry)===row.name.toLowerCase()?"is-current":""} key={row.name}><th><b>{row.name}</b>{target&&<button type="button" onClick={()=>onSelect(target)}>进入实验 →</button>}</th>{row.cells.map((cell,index)=><td key={`${row.name}-${index}`}>{cell}</td>)}</tr>;})}</tbody></table></div><p className="comparison-note"><b>选择要点：</b>{comparison.note}</p></section>;
 }
 
 function seededValues(entry: ApiEntry) {
@@ -499,21 +606,22 @@ function simulate(entry: ApiEntry, source: string): Simulation {
 }
 
 export default function FullApiBrowser() {
-  const [query, setQuery] = useState(""); const [group, setGroup] = useState("全部模块"); const [type, setType] = useState("全部类型"); const [page, setPage] = useState(0);
+  const [query, setQuery] = useState(""); const [group, setGroup] = useState("全部模块"); const [subcategory, setSubcategory] = useState("全部细分类"); const [type, setType] = useState("全部类型"); const [page, setPage] = useState(0);
   const [selectedName, setSelectedName] = useState("torch.Tensor.backward"); const [remote, setRemote] = useState<RemoteDoc | null>(null); const [docLoading, setDocLoading] = useState(true);
   const initial = entries.find((x) => x.name === "torch.Tensor.backward") ?? entries[0];
   const [spec, setSpec] = useState(() => defaultSpec(initial)); const [sim, setSim] = useState<Simulation>(() => simulate(initial, defaultSpec(initial))); const [simError, setSimError] = useState("");
   const [runState, setRunState] = useState<"idle" | "running" | "success" | "error">("idle"); const [runCount, setRunCount] = useState(0); const [lastRunAt, setLastRunAt] = useState("");
   const outputRef = useRef<HTMLElement>(null);
   const pageSize = 80;
-  const filtered = useMemo(() => { const keyword=query.trim().toLowerCase(); return entries.filter((entry)=>(group==="全部模块"||entry.group===group)&&(type==="全部类型"||entry.typeLabel===type)&&(!keyword||`${entry.name} ${entry.summary} ${entry.typeLabel} ${entry.group}`.toLowerCase().includes(keyword))); }, [query,group,type]);
+  const subcategoryCounts=useMemo(()=>{const scope=group==="全部模块"?entries:entries.filter(entry=>entry.group===group);const counts=new Map<string,number>();scope.forEach(entry=>{const name=subcategoryOf(entry);counts.set(name,(counts.get(name)??0)+1);});return [...counts.entries()].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0],"zh-CN"));},[group]);
+  const filtered = useMemo(() => { const keyword=query.trim().toLowerCase(); return entries.filter((entry)=>(group==="全部模块"||entry.group===group)&&(subcategory==="全部细分类"||subcategoryOf(entry)===subcategory)&&(type==="全部类型"||entry.typeLabel===type)&&(!keyword||`${entry.name} ${entry.summary} ${entry.typeLabel} ${entry.group} ${subcategoryOf(entry)}`.toLowerCase().includes(keyword))); }, [query,group,subcategory,type]);
   const pages=Math.max(1,Math.ceil(filtered.length/pageSize)), safePage=Math.min(page,pages-1), visible=filtered.slice(safePage*pageSize,(safePage+1)*pageSize);
   const selected=entries.find((item)=>item.name===selectedName)??visible[0]??entries[0];
 
   useEffect(() => { let active=true; fetch(`/api/docs?name=${encodeURIComponent(selected.name)}&url=${encodeURIComponent(selected.url)}`).then((r)=>r.json()).then((data)=>{if(active){setRemote(data);setDocLoading(false);}}).catch(()=>{if(active){setRemote({error:"官方详情暂时无法读取"});setDocLoading(false);}}); return()=>{active=false;}; }, [selected.name,selected.url]);
 
-  function applyFilter(nextGroup:string,nextType:string){setGroup(nextGroup);setType(nextType);setPage(0);}
-  function choose(entry:ApiEntry){const next=defaultSpec(entry);setSelectedName(entry.name);setRemote(null);setDocLoading(true);setSpec(next);setSimError("");setRunState("idle");setRunCount(0);setLastRunAt("");setSim(simulate(entry,next));}
+  function applyFilter(nextGroup:string,nextType:string,nextSubcategory="全部细分类"){setGroup(nextGroup);setType(nextType);setSubcategory(nextSubcategory);setPage(0);}
+  function choose(entry:ApiEntry,syncFilters=false){const next=defaultSpec(entry);if(syncFilters){setGroup(entry.group);setSubcategory(subcategoryOf(entry));setType("全部类型");setPage(0);}setSelectedName(entry.name);setRemote(null);setDocLoading(true);setSpec(next);setSimError("");setRunState("idle");setRunCount(0);setLastRunAt("");setSim(simulate(entry,next));}
   function run(){
     setRunState("running"); setSimError("");
     window.setTimeout(()=>{
@@ -528,11 +636,11 @@ export default function FullApiBrowser() {
 
   return <section className="docs-atlas" id="all-apis">
     <div className="docs-atlas__intro"><div><p className="eyebrow">PYTORCH 2.13 · EVERY API IS A LAB</p><h2>9,066 个接口，全部进入深度实验</h2><p>选择任意官方 API，立即得到中文作用、精确签名、参数解释、核心关系式、调用示例、应用场景与输入输出实验。数值算子直接计算；硬件、分布式、编译等接口进行真实约束下的结构预演。</p></div><div className="docs-atlas__stats"><div><strong>{entries.length.toLocaleString("zh-CN")}</strong><span>深度实验</span></div><div><strong>{groupCounts.length}</strong><span>学习模块</span></div><div><strong>100%</strong><span>API 覆盖</span></div></div></div>
-    <div className="docs-toolbar"><label className="docs-search"><span>⌕</span><input value={query} onChange={(e)=>{setQuery(e.target.value);setPage(0);}} placeholder="搜索 torch.compile、Conv2d、backward…" aria-label="搜索全部 PyTorch API" /><kbd>/</kbd></label><select value={group} onChange={(e)=>applyFilter(e.target.value,type)}><option value="全部模块">全部模块</option>{groupCounts.map(([name,count])=><option key={name} value={name}>{name} · {count}</option>)}</select><select value={type} onChange={(e)=>applyFilter(group,e.target.value)}><option value="全部类型">全部类型</option>{typeCounts.map(([name,count])=><option key={name} value={name}>{name} · {count}</option>)}</select></div>
+    <div className="docs-toolbar"><label className="docs-search"><span>⌕</span><input value={query} onChange={(e)=>{setQuery(e.target.value);setPage(0);}} placeholder="搜索 torch.compile、Conv2d、backward…" aria-label="搜索全部 PyTorch API" /><kbd>/</kbd></label><select value={group} onChange={(e)=>applyFilter(e.target.value,type)} aria-label="选择模块"><option value="全部模块">全部模块</option>{groupCounts.map(([name,count])=><option key={name} value={name}>{name} · {count}</option>)}</select><select value={subcategory} onChange={(e)=>{setSubcategory(e.target.value);setPage(0);}} aria-label="选择细分类"><option value="全部细分类">全部细分类</option>{subcategoryCounts.map(([name,count])=><option key={name} value={name}>{name} · {count}</option>)}</select><select value={type} onChange={(e)=>applyFilter(group,e.target.value,subcategory)} aria-label="选择接口类型"><option value="全部类型">全部类型</option>{typeCounts.map(([name,count])=><option key={name} value={name}>{name} · {count}</option>)}</select></div>
     <div className="docs-layout">
-      <aside className="docs-groups"><button className={group==="全部模块"?"active":""} onClick={()=>applyFilter("全部模块",type)}><span>全部模块</span><b>{entries.length}</b></button>{groupCounts.map(([name,count])=><button key={name} className={group===name?"active":""} onClick={()=>applyFilter(name,type)}><span>{name}</span><b>{count}</b></button>)}</aside>
-      <div className="docs-results"><div className="docs-results__head"><p>找到 <b>{filtered.length.toLocaleString("zh-CN")}</b> 个实验</p><span>第 {safePage+1} / {pages} 页</span></div><div className="api-table" role="table"><div className="api-table__header"><span>接口</span><span>类型</span><span>中文用途</span></div>{visible.map((entry)=><button key={entry.name} className={selected.name===entry.name?"selected":""} onClick={()=>choose(entry)}><code>{entry.name}</code><span>{entry.typeLabel}</span><p>{entry.summary}</p></button>)}{!visible.length&&<div className="docs-empty">没有匹配的接口，换个关键词试试。</div>}</div><div className="pagination"><button disabled={safePage===0} onClick={()=>setPage(Math.max(0,safePage-1))}>← 上一页</button><span>{filtered.length?safePage*pageSize+1:0}–{Math.min((safePage+1)*pageSize,filtered.length)} / {filtered.length}</span><button disabled={safePage>=pages-1} onClick={()=>setPage(Math.min(pages-1,safePage+1))}>下一页 →</button></div></div>
-      <aside className="api-inspector"><div className="api-inspector__top"><span>{selected.group}</span><i>{selected.typeLabel}</i></div><h3>{selected.leaf}</h3><code className="api-inspector__path">{selected.name}</code><section><small>它做什么</small><p>{conceptOf(selected)}</p></section><section><small>官方数学定义</small><FormulaPanel entry={selected} compact /></section><section><small>应用场景</small><p>{scenarioOf(selected)}</p></section><a className="official-link" href="#deep-lab">进入本接口完整实验 ↓</a></aside>
+      <aside className="docs-groups"><div className="docs-groups__title">一级 · 模块</div><div className="docs-module-list"><button className={group==="全部模块"?"active":""} onClick={()=>applyFilter("全部模块",type)}><span>全部模块</span><b>{entries.length}</b></button>{groupCounts.map(([name,count])=><button key={name} className={group===name?"active":""} onClick={()=>applyFilter(name,type)}><span>{name}</span><b>{count}</b></button>)}</div><div className="docs-groups__title docs-groups__title--sub">二级 · 细分类</div><div className="docs-subcategories"><button className={subcategory==="全部细分类"?"active":""} onClick={()=>{setSubcategory("全部细分类");setPage(0);}}><span>全部细分类</span><b>{subcategoryCounts.reduce((sum,item)=>sum+item[1],0)}</b></button>{subcategoryCounts.map(([name,count])=><button key={name} className={subcategory===name?"active":""} onClick={()=>{setSubcategory(name);setPage(0);}}><span>{name}</span><b>{count}</b></button>)}</div></aside>
+      <div className="docs-results"><div className="docs-results__head"><p>找到 <b>{filtered.length.toLocaleString("zh-CN")}</b> 个实验 <em>{group} › {subcategory}</em></p><span>第 {safePage+1} / {pages} 页</span></div><div className="api-table" role="table"><div className="api-table__header"><span>接口 / 细分类</span><span>类型</span><span>中文用途</span></div>{visible.map((entry)=><button key={entry.name} className={selected.name===entry.name?"selected":""} onClick={()=>choose(entry)}><div><code>{entry.name}</code><small>{subcategoryOf(entry)}</small></div><span>{entry.typeLabel}</span><p>{entry.summary}</p></button>)}{!visible.length&&<div className="docs-empty">没有匹配的接口，换个关键词试试。</div>}</div><div className="pagination"><button disabled={safePage===0} onClick={()=>setPage(Math.max(0,safePage-1))}>← 上一页</button><span>{filtered.length?safePage*pageSize+1:0}–{Math.min((safePage+1)*pageSize,filtered.length)} / {filtered.length}</span><button disabled={safePage>=pages-1} onClick={()=>setPage(Math.min(pages-1,safePage+1))}>下一页 →</button></div></div>
+      <aside className="api-inspector"><div className="api-inspector__top"><span>{selected.group}<em> › {subcategoryOf(selected)}</em></span><i>{selected.typeLabel}</i></div><h3>{selected.leaf}</h3><code className="api-inspector__path">{selected.name}</code><section><small>它做什么</small><p>{conceptOf(selected)}</p></section><section><small>官方数学定义</small><FormulaPanel entry={selected} compact /></section><section><small>应用场景</small><p>{scenarioOf(selected)}</p></section><a className="official-link" href="#deep-lab">进入本接口完整实验 ↓</a></aside>
     </div>
 
     <article className="deep-lab" id="deep-lab">
@@ -541,6 +649,7 @@ export default function FullApiBrowser() {
         <section className="deep-card"><small>① 中文解析与官方公式</small><h4>{selected.summary}</h4><p>{conceptOf(selected)}</p><div className="deep-formula"><span>标准数学定义</span><FormulaPanel entry={selected} /></div></section>
         <section className="deep-card"><small>② 官方调用方法</small>{docLoading?<p className="loading-line">正在读取官方签名…</p>:<><pre><code>{remote?.signature||`${selected.name}(*args, **kwargs)`}</code></pre>{remote?.summary&&<p className="official-summary">官方说明：{remote.summary}</p>}</>}<a href={selected.url} target="_blank" rel="noreferrer">核对官方原文 ↗</a></section>
         <section className="deep-card deep-card--wide"><small>③ 参数与变量地图</small><div className="deep-vars">{variablesOf(selected,remote).map((v)=><div key={v.name}><code>{v.name}</code><p>{v.meaning}</p><span>例：{v.sample}</span></div>)}</div></section>
+        <AlgorithmComparison entry={selected} onSelect={(entry)=>choose(entry,true)} />
         <section className="deep-card"><small>④ 使用场景与 Example</small><p>{scenarioOf(selected)}</p><pre><code>{selected.type==="class"?`component = ${selected.name}(...)\noutput = component(input)`:selected.name.startsWith("torch.Tensor.")?`output = input.${selected.leaf}(...)`:`output = ${selected.name}(input, ...)`}</code></pre></section>
         <section className="deep-card simulator-card"><small>⑤ 输入与执行</small><label><span>实验输入（JSON）</span><textarea value={spec} onChange={(e)=>{setSpec(e.target.value);setRunState("idle");}} spellCheck={false}/></label><button type="button" onClick={run} disabled={runState==="running"}>{runState==="running"?"⏳ 正在执行…":runState==="success"?"✓ 已执行 · 再运行一次":"▶ 运行本接口实验"}</button>{runState==="idle"&&<p className="run-hint">修改输入后点击按钮，页面会自动定位到本次输出。</p>}{simError&&<p className="sim-error" role="alert">{simError}</p>}</section>
         <section ref={outputRef} className={`deep-card deep-card--wide output-card output-card--${runState}`} aria-live="polite"><small>⑥ 计算过程与最终结果</small><div className="run-receipt"><b>{runState==="running"?"正在计算…":runState==="success"?`运行成功 · 第 ${runCount} 次`:runState==="error"?"运行失败":"示例结果预览"}</b><span>{lastRunAt?`完成时间 ${lastRunAt}`:"点击上方按钮执行当前输入"}</span></div><div className="sim-mode"><b>{sim.title}</b><span>{sim.mode} · {sim.mode==="数值计算"||sim.mode==="梯度计算"?"下方展示实际算式、参与运算的单元格与数值":"下方展示张量形状、元素位置与状态变化"}</span></div><CalculationVisualizer key={`${selected.name}-${runCount}`} entry={selected} source={spec} sim={sim} /><div className="trace-row trace-row--compact">{sim.trace.map((step,i)=><div key={`${i}-${step}`}><span>{i+1}</span><p>{step}</p></div>)}</div><div className="result-label">最终结果（精确数据）</div><pre><code>{JSON.stringify(sim.value,null,2)}</code></pre></section>

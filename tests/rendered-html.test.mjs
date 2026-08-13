@@ -35,6 +35,13 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(browser, /自动播放/);
   assert.match(browser, /输出 Y\[h=\$\{i\},w=\$\{j\}\]/);
   assert.match(browser, /最终结果/);
+  assert.match(browser, /全部细分类/);
+  assert.match(browser, /一级 · 模块/);
+  assert.match(browser, /二级 · 细分类/);
+  assert.match(browser, /同类算法区别/);
+  assert.match(browser, /Conv1d、Conv2d、Conv3d/);
+  assert.match(browser, /同值演示/);
+  assert.match(browser, /subcategoryOf/);
   assert.doesNotMatch(browser, /output_contract|接口生命周期|返回值以官方签名为准/);
   assert.ok(JSON.parse(index).length > 9000);
   assert.match(layout, /lang="zh-CN"/);
