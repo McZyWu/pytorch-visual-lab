@@ -43,6 +43,10 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(browser, /subcategoryOf/);
   assert.match(browser, /交互式滑窗演示/);
   assert.match(browser, /实际扫描顺序/);
+  assert.match(browser, /核心区别是卷积核拥有 1 \/ 2 \/ 3 个空间维度/);
+  assert.match(browser, /常用输出遍历顺序/);
+  assert.match(browser, /W → H → D/);
+  assert.match(browser, /不会影响最终输出值/);
   assert.match(browser, /输入 shape 是否有限制/);
   assert.match(browser, /S_in \+ 2p/);
   assert.match(browser, /padding=&quot;same&quot;/);
