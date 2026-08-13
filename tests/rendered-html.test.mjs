@@ -36,8 +36,14 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(browser, /输出 Y\[h=\$\{i\},w=\$\{j\}\]/);
   assert.match(browser, /最终结果/);
   assert.match(browser, /全部细分类/);
-  assert.match(browser, /一级 · 模块/);
-  assert.match(browser, /二级 · 细分类/);
+  assert.match(browser, /按接口种类浏览/);
+  assert.match(browser, /一级模块/);
+  assert.match(browser, /二级分类/);
+  assert.match(browser, /相似方法对比索引/);
+  assert.match(browser, /区别表 \/ 模拟表格在哪/);
+  assert.match(browser, /接口详情标签页/);
+  assert.match(browser, /介绍与公式/);
+  assert.match(browser, /计算过程与输出/);
   assert.match(browser, /同类算法区别/);
   assert.match(browser, /Conv1d、Conv2d、Conv3d/);
   assert.match(browser, /subcategoryOf/);

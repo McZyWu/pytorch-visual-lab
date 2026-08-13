@@ -17,6 +17,9 @@ type FormulaSpec = { latex: string; spoken: string; explanation: string; symbols
 type PositionTerm = { inputKey: string; inputIndex: number; inputCoord: string; inputValue: number; parameterKey?: string; parameterIndex?: number; parameterCoord?: string; parameterValue?: number; result: number; operator: string };
 type PositionDetail = { title: string; outputCoord: string; outputValue: number | boolean; terms: PositionTerm[]; bias?: number; rule: string; aggregation?: "sum" | "max" | "mean" | "direct" };
 type ComparisonSpec = { title: string; intro: string; columns: string[]; rows: Array<{ name: string; api?: string; cells: string[] }>; note: string };
+type ApiKind = "函数" | "类" | "方法" | "其他";
+type DetailTab = "overview" | "usage" | "example" | "result" | "compare";
+type ComparisonCatalogItem = { id: string; title: string; methods: string; difference: string; families: string[] };
 type ConvDimensionDemo = { dimension: 1 | 2 | 3; name: string; axisNames: string[]; inputShape: number[]; input: number[]; kernelShape: number[]; kernel: number[]; stride: number[]; padding: number[]; dilation: number[]; description: string };
 type ConvDemoTerm = { inputCoord: number[]; kernelCoord: number[]; inputValue: number; kernelValue: number; product: number; inside: boolean };
 type ConvDemoPosition = { outputCoord: number[]; origin: number[]; value: number; terms: ConvDemoTerm[] };
@@ -25,9 +28,13 @@ const entries = apiIndex as ApiEntry[];
 const groupCounts = Object.entries(entries.reduce<Record<string, number>>((all, item) => {
   all[item.group] = (all[item.group] ?? 0) + 1; return all;
 }, {})).sort((a, b) => b[1] - a[1]);
-const typeCounts = Object.entries(entries.reduce<Record<string, number>>((all, item) => {
-  all[item.typeLabel] = (all[item.typeLabel] ?? 0) + 1; return all;
-}, {})).sort((a, b) => b[1] - a[1]);
+
+function kindOf(entry: ApiEntry): ApiKind {
+  if (entry.type === "function") return "函数";
+  if (entry.type === "class") return "类";
+  if (entry.type === "method") return "方法";
+  return "其他";
+}
 
 function cleanLeaf(entry: ApiEntry) { return entry.leaf.replace(/_$/, "").toLowerCase(); }
 function shapeOf(value: unknown): number[] { return Array.isArray(value) ? [value.length, ...(value.length ? shapeOf(value[0]) : [])] : []; }
@@ -293,6 +300,30 @@ function comparisonOf(entry: ApiEntry): ComparisonSpec | null {
   ],note:"reshape/view/flatten 关注同一张量的维度解释；transpose 改变索引映射；stack/cat 组合多个张量。"};
   if (family === "binary") return {title:"二元逐元素运算区别",intro:"都遵循 broadcasting，区别在每个对应位置使用的数学运算。",columns:["算法","x=[2,4], other=2","结果","风险/注意"],rows:[{name:"add",api:"torch.add",cells:["x+2","[4,6]","整数和浮点均常用"]},{name:"sub",api:"torch.sub",cells:["x−2","[0,2]","注意操作数顺序"]},{name:"mul",api:"torch.mul",cells:["x×2","[4,8]","逐元素乘，不是矩阵乘"]},{name:"div",api:"torch.div",cells:["x÷2","[1,2]","整数输入时关注 rounding_mode"]},{name:"pow",api:"torch.pow",cells:["x²","[4,16]","负底数与非整数指数可能产生 NaN"]}],note:"torch.mul 是逐元素乘法；矩阵乘法应使用 matmul/mm/bmm。"};
   return null;
+}
+
+const comparisonCatalog: ComparisonCatalogItem[] = [
+  {id:"convolution",title:"Conv1d / Conv2d / Conv3d",methods:"Conv1d、Conv2d、Conv3d",difference:"空间核维数、合法输入 shape、滑动轴与 W→H→D 遍历顺序",families:["convolution"]},
+  {id:"pooling",title:"最大池化 / 平均池化 / 自适应池化",methods:"MaxPool2d、AvgPool2d、AdaptiveAvgPool2d",difference:"窗口归约规则、padding 语义以及是否直接指定输出尺寸",families:["pooling"]},
+  {id:"activation",title:"常用激活函数",methods:"ReLU、Sigmoid、Tanh、GELU",difference:"公式、输出范围、饱和区间、梯度和常用网络场景",families:["activation","softmax"]},
+  {id:"loss",title:"回归与分类损失",methods:"L1Loss、MSELoss、HuberLoss、CrossEntropyLoss、BCEWithLogitsLoss",difference:"输入语义、逐项损失、异常值敏感度以及 logits/target 要求",families:["mse","distance_loss","cross_entropy","bce"]},
+  {id:"matmul",title:"向量与矩阵乘法",methods:"dot、mv、mm、bmm、matmul",difference:"接受的维数、输出 shape、批处理与广播规则",families:["matmul"]},
+  {id:"reduction",title:"统计与归约",methods:"sum、mean、max、argmax、prod",difference:"归约结果、是否返回索引、可导性与 keepdim 影响",families:["reduction"]},
+  {id:"shape",title:"形状与维度操作",methods:"reshape、view、flatten、transpose、stack、cat",difference:"元素总数、索引映射、view/复制以及新增维和已有维连接",families:["reshape","squeeze","transpose","combine","split"]},
+  {id:"binary",title:"二元逐元素运算",methods:"add、sub、mul、div、pow",difference:"对应位置的运算、broadcasting 与数值风险",families:["binary"]},
+];
+
+function comparisonCatalogOf(entry: ApiEntry) {
+  const family=familyOf(entry);
+  return comparisonCatalog.find(item=>item.families.includes(family))??null;
+}
+
+function ComparisonDirectory({ selected, onOpen, onClose }: { selected: ApiEntry; onOpen: (entry: ApiEntry, tab: DetailTab) => void; onClose: () => void }) {
+  const current=comparisonCatalogOf(selected);
+  return <section className="comparison-directory" id="comparison-directory">
+    <header><div><small>二级分类 · 独立资料</small><h3>相似方法对比索引</h3><p>先找“哪些方法相似”，再进入区别表或对应函数模拟，不必先打开某一个函数页。</p></div><button type="button" onClick={onClose}>返回接口目录</button></header>
+    <div className="comparison-directory__table"><table><thead><tr><th>相似方法组</th><th>包含哪些方法</th><th>介绍 / 主要区分</th><th>区别表 / 模拟表格在哪</th></tr></thead><tbody>{comparisonCatalog.map(item=>{const target=entries.find(entry=>item.families.includes(familyOf(entry))&&comparisonOf(entry));return <tr className={current?.id===item.id?"is-current":""} key={item.id}><th>{item.title}</th><td>{item.methods}</td><td>{item.difference}</td><td>{target?<div className="comparison-directory__links"><button type="button" onClick={()=>onOpen(target,"compare")}>打开区别表</button><button type="button" onClick={()=>onOpen(target,"result")}>进入对应模拟</button></div>:"整理中"}</td></tr>;})}</tbody></table></div>
+  </section>;
 }
 
 function AlgorithmComparison({ entry, onSelect }: { entry: ApiEntry; onSelect: (entry: ApiEntry) => void }) {
@@ -650,27 +681,31 @@ function simulate(entry: ApiEntry, source: string): Simulation {
 }
 
 export default function FullApiBrowser() {
-  const [query, setQuery] = useState(""); const [group, setGroup] = useState("全部模块"); const [subcategory, setSubcategory] = useState("全部细分类"); const [type, setType] = useState("全部类型"); const [page, setPage] = useState(0);
-  const [selectedName, setSelectedName] = useState("torch.Tensor.backward"); const [remote, setRemote] = useState<RemoteDoc | null>(null); const [docLoading, setDocLoading] = useState(true);
-  const initial = entries.find((x) => x.name === "torch.Tensor.backward") ?? entries[0];
+  const [query, setQuery] = useState(""); const [group, setGroup] = useState("全部模块"); const [subcategory, setSubcategory] = useState("全部细分类"); const [kind, setKind] = useState<ApiKind>("函数"); const [page, setPage] = useState(0);
+  const [detailTab,setDetailTab]=useState<DetailTab>("overview"); const [showComparisonDirectory,setShowComparisonDirectory]=useState(false);
+  const [selectedName, setSelectedName] = useState("torch.add"); const [remote, setRemote] = useState<RemoteDoc | null>(null); const [docLoading, setDocLoading] = useState(true);
+  const initial = entries.find((x) => x.name === "torch.add") ?? entries.find((x)=>x.type==="function") ?? entries[0];
   const [spec, setSpec] = useState(() => defaultSpec(initial)); const [sim, setSim] = useState<Simulation>(() => simulate(initial, defaultSpec(initial))); const [simError, setSimError] = useState("");
   const [runState, setRunState] = useState<"idle" | "running" | "success" | "error">("idle"); const [runCount, setRunCount] = useState(0); const [lastRunAt, setLastRunAt] = useState("");
   const outputRef = useRef<HTMLElement>(null);
-  const pageSize = 80;
-  const subcategoryCounts=useMemo(()=>{const scope=group==="全部模块"?entries:entries.filter(entry=>entry.group===group);const counts=new Map<string,number>();scope.forEach(entry=>{const name=subcategoryOf(entry);counts.set(name,(counts.get(name)??0)+1);});return [...counts.entries()].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0],"zh-CN"));},[group]);
-  const filtered = useMemo(() => { const keyword=query.trim().toLowerCase(); return entries.filter((entry)=>(group==="全部模块"||entry.group===group)&&(subcategory==="全部细分类"||subcategoryOf(entry)===subcategory)&&(type==="全部类型"||entry.typeLabel===type)&&(!keyword||`${entry.name} ${entry.summary} ${entry.typeLabel} ${entry.group} ${subcategoryOf(entry)}`.toLowerCase().includes(keyword))); }, [query,group,subcategory,type]);
+  const pageSize = 12;
+  const kindCounts=useMemo(()=>Object.fromEntries((["函数","类","方法","其他"] as ApiKind[]).map(name=>[name,entries.filter(entry=>kindOf(entry)===name).length])) as Record<ApiKind,number>,[]);
+  const groupCountsByKind=useMemo(()=>Object.entries(entries.filter(entry=>kindOf(entry)===kind).reduce<Record<string,number>>((all,entry)=>(all[entry.group]=(all[entry.group]??0)+1,all),{})).sort((a,b)=>b[1]-a[1]),[kind]);
+  const subcategoryCounts=useMemo(()=>{const scope=entries.filter(entry=>kindOf(entry)===kind&&(group==="全部模块"||entry.group===group));const counts=new Map<string,number>();scope.forEach(entry=>{const name=subcategoryOf(entry);counts.set(name,(counts.get(name)??0)+1);});return [...counts.entries()].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0],"zh-CN"));},[group,kind]);
+  const filtered = useMemo(() => { const keyword=query.trim().toLowerCase(); return entries.filter((entry)=>kindOf(entry)===kind&&(group==="全部模块"||entry.group===group)&&(subcategory==="全部细分类"||subcategoryOf(entry)===subcategory)&&(!keyword||`${entry.name} ${entry.summary} ${entry.typeLabel} ${entry.group} ${subcategoryOf(entry)}`.toLowerCase().includes(keyword))); }, [query,group,subcategory,kind]);
   const pages=Math.max(1,Math.ceil(filtered.length/pageSize)), safePage=Math.min(page,pages-1), visible=filtered.slice(safePage*pageSize,(safePage+1)*pageSize);
   const selected=entries.find((item)=>item.name===selectedName)??visible[0]??entries[0];
 
   useEffect(() => { let active=true; fetch(`/api/docs?name=${encodeURIComponent(selected.name)}&url=${encodeURIComponent(selected.url)}`).then((r)=>r.json()).then((data)=>{if(active){setRemote(data);setDocLoading(false);}}).catch(()=>{if(active){setRemote({error:"官方详情暂时无法读取"});setDocLoading(false);}}); return()=>{active=false;}; }, [selected.name,selected.url]);
 
-  function applyFilter(nextGroup:string,nextType:string,nextSubcategory="全部细分类"){setGroup(nextGroup);setType(nextType);setSubcategory(nextSubcategory);setPage(0);}
-  function choose(entry:ApiEntry,syncFilters=false){const next=defaultSpec(entry);if(syncFilters){setGroup(entry.group);setSubcategory(subcategoryOf(entry));setType("全部类型");setPage(0);}setSelectedName(entry.name);setRemote(null);setDocLoading(true);setSpec(next);setSimError("");setRunState("idle");setRunCount(0);setLastRunAt("");setSim(simulate(entry,next));}
+  function applyKind(nextKind:ApiKind){setKind(nextKind);setGroup("全部模块");setSubcategory("全部细分类");setPage(0);setShowComparisonDirectory(false);const first=entries.find(entry=>kindOf(entry)===nextKind);if(first)choose(first);}
+  function applyGroup(nextGroup:string){setGroup(nextGroup);setSubcategory("全部细分类");setPage(0);setShowComparisonDirectory(false);}
+  function choose(entry:ApiEntry,syncFilters=false,nextTab:DetailTab="overview"){const next=defaultSpec(entry);if(syncFilters){setKind(kindOf(entry));setGroup(entry.group);setSubcategory(subcategoryOf(entry));setPage(0);}setSelectedName(entry.name);setRemote(null);setDocLoading(true);setSpec(next);setSimError("");setRunState("idle");setRunCount(0);setLastRunAt("");setSim(simulate(entry,next));setDetailTab(nextTab);setShowComparisonDirectory(false);window.setTimeout(()=>document.getElementById("deep-lab")?.scrollIntoView({behavior:"smooth",block:"start"}),0);}
   function run(){
     setRunState("running"); setSimError("");
     window.setTimeout(()=>{
       try {
-        setSim(simulate(selected,spec)); setRunCount((count)=>count+1); setLastRunAt(new Date().toLocaleTimeString("zh-CN",{hour12:false})); setRunState("success");
+        setSim(simulate(selected,spec)); setRunCount((count)=>count+1); setLastRunAt(new Date().toLocaleTimeString("zh-CN",{hour12:false})); setRunState("success"); setDetailTab("result");
         window.requestAnimationFrame(()=>outputRef.current?.scrollIntoView({behavior:"smooth",block:"center"}));
       } catch(error) {
         setSimError(error instanceof Error?error.message:"请输入有效 JSON"); setRunState("error");
@@ -680,23 +715,26 @@ export default function FullApiBrowser() {
 
   return <section className="docs-atlas" id="all-apis">
     <div className="docs-atlas__intro"><div><p className="eyebrow">PYTORCH 2.13 · EVERY API IS A LAB</p><h2>9,066 个接口，全部进入深度实验</h2><p>选择任意官方 API，立即得到中文作用、精确签名、参数解释、核心关系式、调用示例、应用场景与输入输出实验。数值算子直接计算；硬件、分布式、编译等接口进行真实约束下的结构预演。</p></div><div className="docs-atlas__stats"><div><strong>{entries.length.toLocaleString("zh-CN")}</strong><span>深度实验</span></div><div><strong>{groupCounts.length}</strong><span>学习模块</span></div><div><strong>100%</strong><span>API 覆盖</span></div></div></div>
-    <div className="docs-toolbar"><label className="docs-search"><span>⌕</span><input value={query} onChange={(e)=>{setQuery(e.target.value);setPage(0);}} placeholder="搜索 torch.compile、Conv2d、backward…" aria-label="搜索全部 PyTorch API" /><kbd>/</kbd></label><select value={group} onChange={(e)=>applyFilter(e.target.value,type)} aria-label="选择模块"><option value="全部模块">全部模块</option>{groupCounts.map(([name,count])=><option key={name} value={name}>{name} · {count}</option>)}</select><select value={subcategory} onChange={(e)=>{setSubcategory(e.target.value);setPage(0);}} aria-label="选择细分类"><option value="全部细分类">全部细分类</option>{subcategoryCounts.map(([name,count])=><option key={name} value={name}>{name} · {count}</option>)}</select><select value={type} onChange={(e)=>applyFilter(group,e.target.value,subcategory)} aria-label="选择接口类型"><option value="全部类型">全部类型</option>{typeCounts.map(([name,count])=><option key={name} value={name}>{name} · {count}</option>)}</select></div>
-    <div className="docs-layout">
-      <aside className="docs-groups"><div className="docs-groups__title">一级 · 模块</div><div className="docs-module-list"><button className={group==="全部模块"?"active":""} onClick={()=>applyFilter("全部模块",type)}><span>全部模块</span><b>{entries.length}</b></button>{groupCounts.map(([name,count])=><button key={name} className={group===name?"active":""} onClick={()=>applyFilter(name,type)}><span>{name}</span><b>{count}</b></button>)}</div><div className="docs-groups__title docs-groups__title--sub">二级 · 细分类</div><div className="docs-subcategories"><button className={subcategory==="全部细分类"?"active":""} onClick={()=>{setSubcategory("全部细分类");setPage(0);}}><span>全部细分类</span><b>{subcategoryCounts.reduce((sum,item)=>sum+item[1],0)}</b></button>{subcategoryCounts.map(([name,count])=><button key={name} className={subcategory===name?"active":""} onClick={()=>{setSubcategory(name);setPage(0);}}><span>{name}</span><b>{count}</b></button>)}</div></aside>
-      <div className="docs-results"><div className="docs-results__head"><p>找到 <b>{filtered.length.toLocaleString("zh-CN")}</b> 个实验 <em>{group} › {subcategory}</em></p><span>第 {safePage+1} / {pages} 页</span></div><div className="api-table" role="table"><div className="api-table__header"><span>接口 / 细分类</span><span>类型</span><span>中文用途</span></div>{visible.map((entry)=><button key={entry.name} className={selected.name===entry.name?"selected":""} onClick={()=>choose(entry)}><div><code>{entry.name}</code><small>{subcategoryOf(entry)}</small></div><span>{entry.typeLabel}</span><p>{entry.summary}</p></button>)}{!visible.length&&<div className="docs-empty">没有匹配的接口，换个关键词试试。</div>}</div><div className="pagination"><button disabled={safePage===0} onClick={()=>setPage(Math.max(0,safePage-1))}>← 上一页</button><span>{filtered.length?safePage*pageSize+1:0}–{Math.min((safePage+1)*pageSize,filtered.length)} / {filtered.length}</span><button disabled={safePage>=pages-1} onClick={()=>setPage(Math.min(pages-1,safePage+1))}>下一页 →</button></div></div>
-      <aside className="api-inspector"><div className="api-inspector__top"><span>{selected.group}<em> › {subcategoryOf(selected)}</em></span><i>{selected.typeLabel}</i></div><h3>{selected.leaf}</h3><code className="api-inspector__path">{selected.name}</code><section><small>它做什么</small><p>{conceptOf(selected)}</p></section><section><small>官方数学定义</small><FormulaPanel entry={selected} compact /></section><section><small>应用场景</small><p>{scenarioOf(selected)}</p></section><a className="official-link" href="#deep-lab">进入本接口完整实验 ↓</a></aside>
-    </div>
+    <div className="docs-kind-tabs" role="tablist" aria-label="按接口种类浏览">{(["函数","类","方法","其他"] as ApiKind[]).map(name=><button role="tab" aria-selected={kind===name} className={kind===name?"active":""} key={name} onClick={()=>applyKind(name)}><span>{name}</span><b>{kindCounts[name].toLocaleString("zh-CN")}</b></button>)}</div>
+    <div className="docs-toolbar"><label className="docs-search"><span>⌕</span><input value={query} onChange={(e)=>{setQuery(e.target.value);setPage(0);}} placeholder={`在${kind}中搜索 Conv2d、backward…`} aria-label={`搜索 PyTorch ${kind}`} /><kbd>/</kbd></label><span className="docs-toolbar__path">{kind} › {group} › {subcategory}</span></div>
+    <nav className="docs-level-one" aria-label="一级模块"><strong>一级模块</strong><div><button className={group==="全部模块"?"active":""} onClick={()=>applyGroup("全部模块")}>全部 <b>{kindCounts[kind]}</b></button>{groupCountsByKind.map(([name,count])=><button key={name} className={group===name?"active":""} onClick={()=>applyGroup(name)}>{name} <b>{count}</b></button>)}</div></nav>
+    <nav className="docs-level-two" aria-label="二级细分类"><div className="docs-level-two__label"><strong>二级分类</strong><span>仅显示当前一级模块的分类</span></div><div className="docs-level-two__tabs" role="tablist"><button role="tab" aria-selected={subcategory==="全部细分类"&&!showComparisonDirectory} className={subcategory==="全部细分类"&&!showComparisonDirectory?"active":""} onClick={()=>{setSubcategory("全部细分类");setShowComparisonDirectory(false);setPage(0);}}>全部 <b>{subcategoryCounts.reduce((sum,item)=>sum+item[1],0)}</b></button>{subcategoryCounts.map(([name,count])=><button role="tab" aria-selected={subcategory===name&&!showComparisonDirectory} key={name} className={subcategory===name&&!showComparisonDirectory?"active":""} onClick={()=>{setSubcategory(name);setShowComparisonDirectory(false);setPage(0);}}>{name} <b>{count}</b></button>)}<button role="tab" aria-selected={showComparisonDirectory} className={`comparison-index-link ${showComparisonDirectory?"active":""}`} onClick={()=>setShowComparisonDirectory(true)}>相似方法对比表 <b>{comparisonCatalog.length}</b></button></div></nav>
+    {showComparisonDirectory?<ComparisonDirectory selected={selected} onClose={()=>setShowComparisonDirectory(false)} onOpen={(entry,tab)=>choose(entry,true,tab)}/>:<div className="docs-layout">
+      <div className="docs-results"><div className="docs-results__head"><p>找到 <b>{filtered.length.toLocaleString("zh-CN")}</b> 个{kind} <em>{group} › {subcategory}</em></p><span>第 {safePage+1} / {pages} 页</span></div><div className="api-table" role="table"><div className="api-table__header"><span>接口 / 细分类</span><span>类型</span><span>中文用途</span></div>{visible.map((entry)=><button key={entry.name} className={selected.name===entry.name?"selected":""} onClick={()=>choose(entry)}><div><code>{entry.name}</code><small>{subcategoryOf(entry)}</small></div><span>{entry.typeLabel}</span><p>{entry.summary}</p></button>)}{!visible.length&&<div className="docs-empty">没有匹配的接口，换个关键词试试。</div>}</div><div className="pagination"><button disabled={safePage===0} onClick={()=>setPage(Math.max(0,safePage-1))}>← 上一页</button><span>{filtered.length?safePage*pageSize+1:0}–{Math.min((safePage+1)*pageSize,filtered.length)} / {filtered.length}</span><button disabled={safePage>=pages-1} onClick={()=>setPage(Math.min(pages-1,safePage+1))}>下一页 →</button></div></div>
+      <aside className="api-inspector"><div className="api-inspector__top"><span>{selected.group}<em> › {subcategoryOf(selected)}</em></span><i>{selected.typeLabel}</i></div><h3>{selected.leaf}</h3><code className="api-inspector__path">{selected.name}</code><section><small>它做什么</small><p>{conceptOf(selected)}</p></section><section><small>官方数学定义</small><FormulaPanel entry={selected} compact /></section><section><small>应用场景</small><p>{scenarioOf(selected)}</p></section><button className="official-link" type="button" onClick={()=>choose(selected,false,"overview")}>进入本接口标签页 ↓</button></aside>
+    </div>}
 
     <article className="deep-lab" id="deep-lab">
       <header><div><p className="eyebrow">FULL API EXPERIMENT</p><h3>{selected.name}</h3></div><span>{sim.mode}</span></header>
+      <div className="deep-lab-tabs" role="tablist" aria-label="接口详情标签页">{([{id:"overview",label:"介绍与公式"},{id:"usage",label:"调用与变量"},{id:"example",label:"Example 与输入"},{id:"result",label:"计算过程与输出"},...(comparisonOf(selected)?[{id:"compare",label:"相似方法区别"}]:[])] as Array<{id:DetailTab;label:string}>).map(tab=><button role="tab" aria-selected={detailTab===tab.id} className={detailTab===tab.id?"active":""} key={tab.id} onClick={()=>setDetailTab(tab.id)}>{tab.label}</button>)}</div>
       <div className="deep-lab__grid">
-        <section className="deep-card"><small>① 中文解析与官方公式</small><h4>{selected.summary}</h4><p>{conceptOf(selected)}</p><div className="deep-formula"><span>标准数学定义</span><FormulaPanel entry={selected} /></div></section>
-        <section className="deep-card"><small>② 官方调用方法</small>{docLoading?<p className="loading-line">正在读取官方签名…</p>:<><pre><code>{remote?.signature||`${selected.name}(*args, **kwargs)`}</code></pre>{remote?.summary&&<p className="official-summary">官方说明：{remote.summary}</p>}</>}<a href={selected.url} target="_blank" rel="noreferrer">核对官方原文 ↗</a></section>
-        <section className="deep-card deep-card--wide"><small>③ 参数与变量地图</small><div className="deep-vars">{variablesOf(selected,remote).map((v)=><div key={v.name}><code>{v.name}</code><p>{v.meaning}</p><span>例：{v.sample}</span></div>)}</div></section>
-        <AlgorithmComparison entry={selected} onSelect={(entry)=>choose(entry,true)} />
-        <section className="deep-card"><small>④ 使用场景与 Example</small><p>{scenarioOf(selected)}</p><pre><code>{selected.type==="class"?`component = ${selected.name}(...)\noutput = component(input)`:selected.name.startsWith("torch.Tensor.")?`output = input.${selected.leaf}(...)`:`output = ${selected.name}(input, ...)`}</code></pre></section>
-        <section className="deep-card simulator-card"><small>⑤ 输入与执行</small><label><span>实验输入（JSON）</span><textarea value={spec} onChange={(e)=>{setSpec(e.target.value);setRunState("idle");}} spellCheck={false}/></label><button type="button" onClick={run} disabled={runState==="running"}>{runState==="running"?"⏳ 正在执行…":runState==="success"?"✓ 已执行 · 再运行一次":"▶ 运行本接口实验"}</button>{runState==="idle"&&<p className="run-hint">修改输入后点击按钮，页面会自动定位到本次输出。</p>}{simError&&<p className="sim-error" role="alert">{simError}</p>}</section>
-        <section ref={outputRef} className={`deep-card deep-card--wide output-card output-card--${runState}`} aria-live="polite"><small>⑥ 计算过程与最终结果</small><div className="run-receipt"><b>{runState==="running"?"正在计算…":runState==="success"?`运行成功 · 第 ${runCount} 次`:runState==="error"?"运行失败":"示例结果预览"}</b><span>{lastRunAt?`完成时间 ${lastRunAt}`:"点击上方按钮执行当前输入"}</span></div><div className="sim-mode"><b>{sim.title}</b><span>{sim.mode} · {sim.mode==="数值计算"||sim.mode==="梯度计算"?"下方展示实际算式、参与运算的单元格与数值":"下方展示张量形状、元素位置与状态变化"}</span></div><CalculationVisualizer key={`${selected.name}-${runCount}`} entry={selected} source={spec} sim={sim} /><div className="trace-row trace-row--compact">{sim.trace.map((step,i)=><div key={`${i}-${step}`}><span>{i+1}</span><p>{step}</p></div>)}</div><div className="result-label">最终结果（精确数据）</div><pre><code>{JSON.stringify(sim.value,null,2)}</code></pre></section>
+        {detailTab==="overview"&&<section className="deep-card deep-card--wide"><small>① 中文解析、官方公式与应用场景</small><h4>{selected.summary}</h4><p>{conceptOf(selected)}</p><div className="deep-formula"><span>标准数学定义</span><FormulaPanel entry={selected} /></div><div className="deep-overview-scenario"><b>什么时候使用</b><p>{scenarioOf(selected)}</p></div></section>}
+        {detailTab==="usage"&&<section className="deep-card deep-card--wide"><small>② 官方调用方法</small>{docLoading?<p className="loading-line">正在读取官方签名…</p>:<><pre><code>{remote?.signature||`${selected.name}(*args, **kwargs)`}</code></pre>{remote?.summary&&<p className="official-summary">官方说明：{remote.summary}</p>}</>}<a href={selected.url} target="_blank" rel="noreferrer">核对官方原文 ↗</a></section>}
+        {detailTab==="usage"&&<section className="deep-card deep-card--wide"><small>③ 参数与变量地图</small><div className="deep-vars">{variablesOf(selected,remote).map((v)=><div key={v.name}><code>{v.name}</code><p>{v.meaning}</p><span>例：{v.sample}</span></div>)}</div></section>}
+        {detailTab==="compare"&&<AlgorithmComparison entry={selected} onSelect={(entry)=>choose(entry,true,"compare")} />}
+        {detailTab==="example"&&<section className="deep-card"><small>④ 使用场景与 Example</small><p>{scenarioOf(selected)}</p><pre><code>{selected.type==="class"?`component = ${selected.name}(...)\noutput = component(input)`:selected.name.startsWith("torch.Tensor.")?`output = input.${selected.leaf}(...)`:`output = ${selected.name}(input, ...)`}</code></pre></section>}
+        {detailTab==="example"&&<section className="deep-card simulator-card"><small>⑤ 输入与执行</small><label><span>实验输入（JSON）</span><textarea value={spec} onChange={(e)=>{setSpec(e.target.value);setRunState("idle");}} spellCheck={false}/></label><button type="button" onClick={run} disabled={runState==="running"}>{runState==="running"?"⏳ 正在执行…":runState==="success"?"✓ 已执行 · 查看计算结果":"▶ 运行本接口实验并打开输出"}</button>{runState==="idle"&&<p className="run-hint">修改输入后运行，将自动切换到“计算过程与输出”。</p>}{simError&&<p className="sim-error" role="alert">{simError}</p>}</section>}
+        {detailTab==="result"&&<section ref={outputRef} className={`deep-card deep-card--wide output-card output-card--${runState}`} aria-live="polite"><small>⑥ 计算过程与最终结果</small><div className="run-receipt"><b>{runState==="running"?"正在计算…":runState==="success"?`运行成功 · 第 ${runCount} 次`:runState==="error"?"运行失败":"示例结果预览"}</b><span>{lastRunAt?`完成时间 ${lastRunAt}`:"可在 Example 与输入标签修改数据"}</span></div><div className="sim-mode"><b>{sim.title}</b><span>{sim.mode} · {sim.mode==="数值计算"||sim.mode==="梯度计算"?"下方展示实际算式、参与运算的单元格与数值":"下方展示张量形状、元素位置与状态变化"}</span></div><CalculationVisualizer key={`${selected.name}-${runCount}`} entry={selected} source={spec} sim={sim} /><div className="trace-row trace-row--compact">{sim.trace.map((step,i)=><div key={`${i}-${step}`}><span>{i+1}</span><p>{step}</p></div>)}</div><div className="result-label">最终结果（精确数据）</div><pre><code>{JSON.stringify(sim.value,null,2)}</code></pre></section>}
       </div>
     </article>
   </section>;
