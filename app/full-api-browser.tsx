@@ -14,6 +14,7 @@ type Variable = { name: string; meaning: string; sample: string };
 type Simulation = { mode: "数值计算" | "梯度计算" | "张量变换" | "对象与状态"; title: string; value: unknown; trace: string[] };
 type TensorItem = { key: string; label: string; value: unknown };
 type FormulaSpec = { latex: string; spoken: string; explanation: string; symbols: Array<{ symbol: string; meaning: string }> };
+type OperationGuide = { title: string; what: string; steps: string[]; returns: string; sideEffect: string; example: string };
 type PositionTerm = { inputKey: string; inputIndex: number; inputCoord: string; inputValue: number; parameterKey?: string; parameterIndex?: number; parameterCoord?: string; parameterValue?: number; result: number; operator: string };
 type PositionDetail = { title: string; outputCoord: string; outputValue: number | boolean; terms: PositionTerm[]; bias?: number; rule: string; aggregation?: "sum" | "max" | "mean" | "direct" };
 type ComparisonSpec = { title: string; intro: string; columns: string[]; rows: Array<{ name: string; api?: string; cells: string[] }>; note: string };
@@ -48,10 +49,94 @@ function roundDeep(value: unknown): unknown {
 function rebuild(values: number[], dims: number[]): unknown { if (!dims.length) return values[0]; const chunk = dims.slice(1).reduce((a, b) => a * b, 1); return Array.from({ length: dims[0] }, (_, i) => rebuild(values.slice(i * chunk, (i + 1) * chunk), dims.slice(1))); }
 function reduceLast(value: unknown, op: (xs: number[]) => number): unknown { if (!Array.isArray(value)) return value; return Array.isArray(value[0]) ? value.map((x) => reduceLast(x, op)) : op(value.map(Number)); }
 
-const xySymbols = [{ symbol: "X", meaning: "输入张量" }, { symbol: "Y", meaning: "输出张量，通常与 X 形状相同" }];
+function roundTiesToEven(x:number){const lower=Math.floor(x),fraction=x-lower;if(fraction<0.5)return lower;if(fraction>0.5)return lower+1;return lower%2===0?lower:lower+1;}
+function erfApprox(x:number){const sign=x<0?-1:1,a=Math.abs(x),t=1/(1+0.3275911*a);return sign*(1-(((((1.061405429*t-1.453152027)*t)+1.421413741)*t-0.284496736)*t+0.254829592)*t*Math.exp(-a*a));}
+function logGammaApprox(x:number){const p=[0.9999999999998099,676.5203681218851,-1259.1392167224028,771.3234287776531,-176.6150291621406,12.507343278686905,-0.13857109526572012,9.984369578019572e-6,1.5056327351493116e-7];if(x<0.5)return Math.log(Math.PI)-Math.log(Math.sin(Math.PI*x))-logGammaApprox(1-x);const z=x-1;let sum=p[0];for(let i=1;i<p.length;i++)sum+=p[i]/(z+i);const t=z+7.5;return 0.5*Math.log(2*Math.PI)+(z+0.5)*Math.log(t)-t+Math.log(sum);}
+
+const foreachUnaryRules: Record<string,{latex:string;label:string;example:(x:number)=>number}> = {
+  abs:{latex:String.raw`|x|`,label:"绝对值",example:Math.abs}, ceil:{latex:String.raw`\lceil x\rceil`,label:"向正无穷取整",example:Math.ceil}, floor:{latex:String.raw`\lfloor x\rfloor`,label:"向负无穷取整",example:Math.floor},
+  round:{latex:String.raw`\operatorname{round}_{\mathrm{ties\ to\ even}}(x)`,label:"舍入到最近整数；正好在中点时取偶数",example:roundTiesToEven}, trunc:{latex:String.raw`\operatorname{trunc}(x)`,label:"截去小数部分、向零取整",example:Math.trunc}, frac:{latex:String.raw`x-\operatorname{trunc}(x)`,label:"保留小数部分",example:x=>x-Math.trunc(x)},
+  neg:{latex:String.raw`-x`,label:"取相反数",example:x=>-x}, reciprocal:{latex:String.raw`1/x`,label:"取倒数",example:x=>1/x}, sqrt:{latex:String.raw`\sqrt{x}`,label:"开平方",example:Math.sqrt}, exp:{latex:String.raw`e^x`,label:"计算自然指数",example:Math.exp}, expm1:{latex:String.raw`e^x-1`,label:"计算 eˣ−1",example:Math.expm1},
+  log:{latex:String.raw`\ln x`,label:"计算自然对数",example:Math.log}, log1p:{latex:String.raw`\ln(1+x)`,label:"计算 ln(1+x)",example:Math.log1p}, log2:{latex:String.raw`\log_2x`,label:"计算以 2 为底的对数",example:Math.log2}, log10:{latex:String.raw`\log_{10}x`,label:"计算以 10 为底的对数",example:Math.log10},
+  sin:{latex:String.raw`\sin x`,label:"计算正弦",example:Math.sin}, cos:{latex:String.raw`\cos x`,label:"计算余弦",example:Math.cos}, tan:{latex:String.raw`\tan x`,label:"计算正切",example:Math.tan}, asin:{latex:String.raw`\arcsin x`,label:"计算反正弦",example:Math.asin}, acos:{latex:String.raw`\arccos x`,label:"计算反余弦",example:Math.acos}, atan:{latex:String.raw`\arctan x`,label:"计算反正切",example:Math.atan},
+  sinh:{latex:String.raw`\sinh x`,label:"计算双曲正弦",example:Math.sinh}, cosh:{latex:String.raw`\cosh x`,label:"计算双曲余弦",example:Math.cosh}, tanh:{latex:String.raw`\tanh x`,label:"计算双曲正切",example:Math.tanh}, sigmoid:{latex:String.raw`1/(1+e^{-x})`,label:"计算 Sigmoid",example:x=>1/(1+Math.exp(-x))},
+  clone:{latex:String.raw`x`,label:"复制数值到新的张量存储",example:x=>x}, zero:{latex:String.raw`0`,label:"把每个元素写成 0",example:()=>0},
+  erf:{latex:String.raw`\frac{2}{\sqrt{\pi}}\int_0^x e^{-t^2}\,dt`,label:"计算误差函数 erf",example:erfApprox}, erfc:{latex:String.raw`1-\operatorname{erf}(x)`,label:"计算互补误差函数 erfc",example:x=>1-erfApprox(x)}, lgamma:{latex:String.raw`\ln\!\left|\Gamma(x)\right|`,label:"计算 Gamma 函数绝对值的自然对数",example:logGammaApprox},
+};
+
+function foreachOperation(entry:ApiEntry){const raw=entry.leaf.toLowerCase(),base=raw.replace(/^_foreach_/,"").replace(/_$/,"");return {base,inPlace:raw.endsWith("_"),rule:foreachUnaryRules[base]};}
+
+function operationGuideOf(entry:ApiEntry):OperationGuide {
+  const family=familyOf(entry), n=cleanLeaf(entry);
+  if(family==="foreach"){
+    const {base,inPlace,rule}=foreachOperation(entry),label=rule?.label??`执行 torch.${base}`;
+    const calculated=rule?`[tensor([${roundDeep(rule.example(1.2))}, ${roundDeep(rule.example(-1.8))}]), tensor([[${roundDeep(rule.example(2))}, ${roundDeep(rule.example(2.3))}]])]`:"对应运算结果";
+    return {title:`对张量列表逐个执行${label}`,what:`输入不是一个 Tensor，而是 List[Tensor]。函数保留列表中每个张量的 shape，并对每个张量里的每个元素执行同一个 ${base} 运算；列表中的张量彼此独立，不会互相广播。`,steps:[`读取列表中的第 k 个张量 X^(k)` ,`遍历该张量的每个位置 i：取 x=X^(k)_i，${rule?rule.label:`计算 torch.${base}(x)`}`,inPlace?`把结果写回同一位置 X^(k)_i，然后处理下一个张量`:`把结果写入新张量的同一位置 Y^(k)_i，然后处理下一个张量`],returns:inPlace?"原地版本以下划线结尾，返回 None；计算结果保存在已被修改的输入张量中。":"返回新的 List[Tensor]；列表长度与输入相同，第 k 个输出 shape 与第 k 个输入相同。",sideEffect:inPlace?"有副作用：输入列表本身仍指向原张量，但这些张量的元素已经被覆盖。":"无原地副作用：输入张量保持不变，输出张量使用新的结果存储。",example:rule?`输入 tensors=[tensor([1.2,-1.8]), tensor([[2.0,2.3]])]；${inPlace?`调用后返回 None，tensors 变为 ${calculated}`:`返回 ${calculated}，tensors 不变`}`:"每个输入张量分别调用对应的单张量运算。"};
+  }
+  const guides:Record<string,OperationGuide>={
+    unary:{title:"逐元素计算一个明确的数学函数",what:"输出与输入 shape 相同；每个输出位置只依赖输入同一位置的值。",steps:["取输入位置 i 的数值 xᵢ",`代入 ${entry.leaf} 对应的具体运算`,`把结果写入输出同一位置 yᵢ`],returns:"返回与输入同 shape 的新张量。",sideEffect:n.endsWith("_")?"名称以下划线结尾时会覆盖原张量。":"默认不修改输入。",example:"例如 ceil([1.2,-1.8,2.0]) = [2,-1,2]。"},
+    binary:{title:"广播对齐后逐元素做二元运算",what:"两个输入先按 broadcasting 从末维对齐，再在每个位置执行加、减、乘、除或幂。",steps:["从最后一维比较两个 shape","长度相等或其中一个为 1 时扩展到共同 shape","对每个对齐位置计算并写入输出"],returns:"返回广播后的共同 shape。",sideEffect:n.endsWith("_")?"原地版本会修改第一个输入。":"默认不修改输入。",example:"add([[1],[2]],[10,20]) → [[11,21],[12,22]]。"},
+    reduction:{title:"沿指定维度把多个值归约成一个值",what:"dim 决定每次取哪一条切片；对切片求和、均值、极值或索引。",steps:["固定除 dim 外的其他坐标","取出 dim 上的全部元素","按接口规则合并并写入输出坐标"],returns:"keepdim=False 删除归约维；keepdim=True 将它保留为长度 1。",sideEffect:"不修改输入。",example:"sum([[1,2],[3,4]], dim=0) = [4,6]。"},
+    convolution:{title:"滑窗内逐项相乘并跨通道累加",what:"每个输出位置对应输入中的一个局部窗口；窗口与卷积核逐项相乘、求和，再加 bias。",steps:["根据 stride、padding、dilation 定位窗口","逐输入通道计算窗口值×核权重","累加所有乘积并写入输出位置"],returns:"返回带 batch、out_channels 和输出空间维度的张量。",sideEffect:"不修改输入。",example:"下方卷积实验可逐输出位置查看全部坐标和乘加项。"},
+    reshape:{title:"不改数值，只重新组织 shape",what:"元素总数保持不变，按线性顺序把同一批元素重新解释为目标维度。",steps:["计算输入元素总数","验证目标 shape 元素总数相同","按原线性顺序映射到新坐标"],returns:"返回目标 shape；可能是 view，也可能复制。",sideEffect:"不修改输入数值。",example:"reshape([1,2,3,4], (2,2)) = [[1,2],[3,4]]。"},
+    activation:{title:`${entry.leaf}：逐元素施加非线性变换`,what:"每个输出元素只由同一位置的输入元素计算；具体分段、指数或平滑公式显示在下方，不用未定义的 f 代替。",steps:["读取位置 i 的输入 x=Xᵢ",`代入 ${entry.leaf} 的完整公式`,`将算出的 y 写到同一位置 Yᵢ`],returns:"返回与输入 shape 相同的张量。",sideEffect:n.endsWith("_")?"原地版本覆盖输入元素。":"不修改输入。",example:"可在实验输入中放入负数、0、正数，逐项观察非线性区间。"},
+    softmax:{title:`${entry.leaf}：沿 dim 把分数归一化为概率`,what:"同一条 dim 切片里的元素共同参与计算：先减最大值防止指数溢出，再取指数并除以指数和。",steps:["取出 dim 上的一整条分数向量","每项计算 exp(xᵢ−max(x))","每项除以该向量的指数总和"],returns:"shape 不变；每条被归一化切片的输出和为 1。",sideEffect:"不修改输入。",example:"softmax([1,2]) ≈ [0.26894,0.73106]。"},
+    pooling:{title:`${entry.leaf}：滑动局部窗口并汇总窗口元素`,what:"卷积核窗口在空间轴上滑动，但没有可学习权重；最大池化取窗口最大值，平均池化取窗口总和除以计数。",steps:["按 kernel_size、stride、padding 定位窗口","读取当前通道窗口内的有效元素","按 max 或 mean 规则写入一个输出值"],returns:"返回通道数不变、空间尺寸按池化公式变化的张量。",sideEffect:"不修改输入。",example:"max_pool1d([1,4,2,3], kernel=2, stride=2) = [4,3]。"},
+    linear:{title:`${entry.leaf}：输入向量乘权重转置后加偏置`,what:"最后一维是输入特征；每个输出特征把全部输入特征与对应权重相乘后求和。",steps:["固定 batch 等前置坐标","取一个输入向量与一行权重做点积","加该输出神经元的 bias"],returns:"最后一维由 in_features 变为 out_features。",sideEffect:"不修改输入；模块参数参与梯度计算。",example:"x=[1,2]、weight=[[3,4]]、bias=[5] 时输出 1×3+2×4+5=16。"},
+    matmul:{title:`${entry.leaf}：行与列逐项相乘后累加`,what:"固定输出位置 (i,j)，取左矩阵第 i 行和右矩阵第 j 列；共享维 K 必须相等。",steps:["选取左输入第 i 行","选取右输入第 j 列","计算 K 个乘积并求和写入 Cᵢⱼ"],returns:"二维时 (M,K)×(K,N) 返回 (M,N)；批量维按规则广播。",sideEffect:"不修改输入。",example:"[[1,2]]×[[3],[4]] = [[1×3+2×4]] = [[11]]。"},
+    transpose:{title:`${entry.leaf}：交换维度对应的坐标`,what:"数值本身不做算术运算；输出坐标通过维度置换映射回输入坐标。",steps:["读取要交换或重排的维度","把输出坐标按逆置换映射到输入坐标","从该输入坐标复制同一个元素"],returns:"返回维度顺序改变的张量，常见实现是共享存储的 view。",sideEffect:n.endsWith("_")?"原地版本修改张量元数据。":"不修改输入数据。",example:"transpose([[1,2,3],[4,5,6]],0,1) = [[1,4],[2,5],[3,6]]。"},
+    squeeze:{title:`${entry.leaf}：增加或删除长度为 1 的维度`,what:"只修改 shape 的维度描述，不改变元素数量、数值或线性顺序。",steps:["读取输入 shape","按 dim 插入 1，或验证并删除长度为 1 的维度","用新坐标解释同一批元素"],returns:"返回新 shape 的 view。",sideEffect:n.endsWith("_")?"原地版本修改 shape 元数据。":"不修改输入。",example:"unsqueeze shape (2,3) at dim=1 → (2,1,3)。"},
+    combine:{title:`${entry.leaf}：沿指定维度拼接或新增维度堆叠`,what:"cat 要求非拼接维完全相同；stack 要求所有 shape 完全相同，并先新增一个维度。",steps:["验证各输入 shape 是否兼容","计算每个输入在输出中的坐标区间","按输入顺序复制元素到对应区间"],returns:"返回包含全部输入元素的新张量。",sideEffect:"不修改输入。",example:"cat([[1,2]],[[3,4]],dim=0) = [[1,2],[3,4]]。"},
+    split:{title:`${entry.leaf}：沿 dim 把一个张量切成多个视图`,what:"按块大小、块数或索引边界划分指定维度；其他维度保持不变。",steps:["读取 dim 的长度","计算每个输出片段的起止索引","为每段建立切片结果"],returns:"返回 Tensor 元组或列表；最后一段可能更短。",sideEffect:"通常不修改输入，结果常与输入共享存储。",example:"chunk([1,2,3,4,5],2) → [1,2,3] 与 [4,5]。"},
+    sorting:{title:`${entry.leaf}：沿 dim 比较元素并确定排序位置`,what:"每条 dim 切片独立排序或选择前 k 项；其他坐标固定不变。",steps:["取出一条 dim 切片","比较元素并确定升降序或 Top-K 位置","写出数值，按接口同时写出原索引"],returns:"返回排序值，部分接口还返回 indices。",sideEffect:n.endsWith("_")?"原地版本覆盖输入顺序。":"不修改输入。",example:"topk([3,1,4,2],2) → values=[4,3], indices=[2,0]。"},
+    counting:{title:`${entry.leaf}：按数值相等关系分组并计数`,what:"扫描输入，把相同值归到同一组；根据接口输出唯一值、频数、逆索引或直方图区间计数。",steps:["展开或沿 dim 读取元素","比较/哈希元素并建立分组","按首次出现或排序规则输出组及统计量"],returns:"返回唯一值或计数相关张量，shape 由组数决定。",sideEffect:"不修改输入。",example:"unique([2,1,2,3,1]) → [1,2,3]。"},
+    comparison:{title:`${entry.leaf}：广播后逐位置判断比较关系`,what:"两个输入先广播到共同 shape，再逐位置执行等于、大小或近似相等判断。",steps:["从末维对齐两个 shape","把长度 1 的维度扩展到共同长度","逐位置比较并写出 True/False"],returns:"通常返回 bool 张量；整体判断接口可返回单个 bool。",sideEffect:"不修改输入。",example:"gt([1,3],[2]) → [False,True]。"},
+    selection:{title:`${entry.leaf}：按条件决定每个输出位置取哪个值`,what:"条件、input 与 other 先广播；条件为真取 input，否则取 other。",steps:["广播对齐条件与候选输入","读取位置 i 的布尔条件","从两个候选值中选择一个写入 Yᵢ"],returns:"返回广播后的共同 shape。",sideEffect:"不修改输入。",example:"where([True,False],[1,2],[10,20]) = [1,20]。"},
+    indexing:{title:`${entry.leaf}：用索引张量读取或写入指定坐标`,what:"index 中的每个整数决定在目标 dim 上访问哪个位置；其他维坐标沿用当前输出坐标。",steps:["读取输出位置及对应 index 值","把 index 值代入输入的目标维坐标","读取、聚合或写入该坐标"],returns:"shape 由 index 与接口规则决定。",sideEffect:/scatter|put|index_add/.test(n)?"写入型版本会更新目标张量。":"读取型版本不修改输入。",example:"gather([10,20,30], index=[2,0]) = [30,10]。"},
+    sequence:{title:`${entry.leaf}：按起点、终点与步长生成数列`,what:"第 i 项直接由序列参数计算，不读取已有张量元素。",steps:["读取 start、end、step 或 steps","计算第 i 项并判断是否到达终点","按索引顺序写入输出"],returns:"返回一维序列张量。",sideEffect:"不修改其他张量。",example:"arange(1,6,2) = [1,3,5]。"},
+    creation:{title:`${entry.leaf}：按目标 shape 创建并填充张量`,what:"先分配指定 shape/dtype/device 的存储，再按零、一、常量、对角线或输入数据填充。",steps:["解析 shape、dtype 与 device","分配足够的元素存储","按当前创建规则写入每个坐标"],returns:"返回新张量。",sideEffect:"创建新存储，不修改现有输入。",example:"full((2,3),7) = [[7,7,7],[7,7,7]]。"},
+    random:{title:`${entry.leaf}：从指定概率分布逐元素采样`,what:"随机数生成器状态与分布参数共同决定每个值；设置相同 generator/seed 可复现序列。",steps:["读取分布参数与随机数生成器状态","为每个位置生成随机比特并转换为分布样本","更新生成器状态并写出样本"],returns:"返回目标 shape 的随机张量。",sideEffect:"推进随机数生成器状态；原地版本覆盖目标张量。",example:"manual_seed 固定后重复运行 rand 可得到相同序列。"},
+    fft:{title:`${entry.leaf}：把采样序列分解成复数频率分量`,what:"每个频率 k 把全部时间样本乘以对应复指数后求和；逆变换执行相反方向并按规范缩放。",steps:["选定变换维和长度 N","为频率 k 累加 N 个样本×复指数","写出复数频谱或逆变换样本"],returns:"返回复数或实数频域/时域张量，长度依接口而定。",sideEffect:"不修改输入。",example:"fft([1,0,0,0]) = [1+0j,1+0j,1+0j,1+0j]。"},
+    linalg:{title:`${entry.leaf}：按线性代数定义处理矩阵或矩阵批次`,what:"最后两个维度作为矩阵；前置维度是可广播的批次。具体分解、求解或范数公式显示在下方。",steps:["验证矩阵维数与可解条件","对每个批次矩阵执行数值算法","按接口写出矩阵、向量或分解因子"],returns:"shape 由矩阵维度与返回的分解因子决定。",sideEffect:"通常不修改输入。",example:"det([[1,2],[3,4]]) = 1×4−2×3 = −2。"},
+    optimizer:{title:`${entry.leaf}：根据梯度与优化器状态更新参数`,what:"读取参数梯度、学习率以及动量/矩估计等状态，算出本步更新量后写回参数。",steps:["读取每个参数的 grad","按当前优化算法更新内部状态并计算 Δθ","原地执行 θ←θ+Δθ"],returns:"step 通常返回 None 或 closure 的损失；state_dict 返回状态。",sideEffect:"修改模型参数及优化器内部状态。",example:"基础 SGD：θ=2、grad=3、lr=0.1 → θ=1.7。"},
+    distribution:{title:`${entry.leaf}：构造分布、采样或计算概率量`,what:"分布参数定义 batch_shape 和事件规则；sample/rsample 生成样本，log_prob 把输入代入对数概率密度。",steps:["验证分布参数的取值域","按方法选择采样、统计量或概率计算","按 sample_shape+batch_shape+event_shape 组织结果"],returns:"返回分布对象、样本或概率张量。",sideEffect:"采样会推进随机状态；纯概率计算不修改输入。",example:"Normal(0,1).log_prob(0) = −0.5×log(2π) ≈ −0.91894。"},
+    dataloader:{title:`${entry.leaf}：把样本索引、读取和批处理组织成数据流`,what:"采样器决定索引顺序，Dataset 按索引取样，collate_fn 把多个样本合成 batch。",steps:["由 sampler 产生一批索引","读取每个索引对应的样本","拼接/整理样本并交给调用方"],returns:"返回可迭代对象、样本或批次。",sideEffect:"可能推进迭代器、随机采样器和工作进程状态。",example:"4 个标量样本、batch_size=2 → 依次产生两个长度 2 的 batch。"},
+    inspection:{title:`${entry.leaf}：读取张量的形状、布局或存储信息`,what:"不进行数值计算，只读取张量元数据或对当前状态做查询。",steps:["定位张量元数据字段","按接口解释维度、步幅、元素数或存储","返回 Python 值、元组或查询对象"],returns:"返回元数据，不返回变换后的张量。",sideEffect:"不修改张量。",example:"numel(shape=(2,3,4)) = 2×3×4 = 24。"},
+    device:{title:`${entry.leaf}：转换张量的数据类型、设备或内存格式`,what:"目标属性与当前相同且 copy=False 时可直接返回原对象；否则分配目标存储并转换每个元素。",steps:["解析目标 dtype/device/layout","判断是否需要复制或转换","分配目标存储并逐元素转换"],returns:"返回目标属性的张量。",sideEffect:"通常不修改输入；显式原地转换接口除外。",example:"tensor([1.8]).to(torch.int32) → tensor([1], dtype=int32)。"},
+    predicate:{title:`${entry.leaf}：检查能力、类型或当前状态是否满足条件`,what:"读取对象或后端状态，按明确条件产生布尔结论，不做张量数学变换。",steps:["读取待检查对象及环境状态","逐条应用当前接口的判定条件","返回 True/False 或布尔张量"],returns:"返回布尔值或布尔张量。",sideEffect:"不修改被检查对象。",example:`${entry.leaf}(...) 的结果直接表示条件是否成立。`},
+    autograd:{title:`${entry.leaf}：沿计算图用链式法则传播梯度`,what:"从输出梯度开始，按计算图反向访问每个运算；把上游梯度乘以局部导数，来自多条路径的梯度相加。",steps:["确定目标输出及上游 grad_output","按反向拓扑顺序计算每个节点的局部梯度","把梯度累加到叶子张量的 .grad 或作为结果返回"],returns:"backward 通常返回 None 并累积 .grad；grad 返回所请求输入的梯度。",sideEffect:"backward 会累积叶子张量的 .grad；需显式清零后再做下一轮。",example:"y=x²，x=3，dy/dx=2x=6；若上游梯度为 2，则传给 x 的梯度为 12。"},
+    cross_entropy:{title:`${entry.leaf}：对目标类别计算 LogSoftmax 后取负对数`,what:"先把每个样本的 logits 归一化为对数概率，再取 target 指定类别的负对数；最后按 reduction 汇总。",steps:["对每个样本计算 logsumexp(logits)","目标类损失为 −logit[target]+logsumexp(logits)","按 none、mean 或 sum 汇总样本损失"],returns:"reduction=none 返回逐样本损失；mean/sum 返回标量或较低维结果。",sideEffect:"不修改 logits 和 target。",example:"logits=[0,ln2]、target=1 时，概率=[1/3,2/3]，损失=−ln(2/3)≈0.40547。"},
+    mse:{title:`${entry.leaf}：计算预测与目标之差的平方`,what:"prediction 与 target 先广播；每个位置计算 (prediction−target)²，再按 reduction 汇总。",steps:["广播 prediction 与 target","逐位置计算误差 eᵢ=pᵢ−tᵢ 及 eᵢ²","按 none、mean 或 sum 返回"],returns:"none 保留广播 shape；mean/sum 返回归约结果。",sideEffect:"不修改输入。",example:"prediction=[2,4]、target=[1,2]：平方误差=[1,4]，mean=2.5。"},
+    distance_loss:{title:`${entry.leaf}：把预测与目标的距离转换成损失`,what:"先逐位置计算差值 d=prediction−target，再按 L1、SmoothL1 或 Huber 的分段规则惩罚误差。",steps:["广播预测与目标并计算差值 d","把 |d| 代入当前损失的绝对值或二次/线性分段公式","按 reduction 汇总"],returns:"none 返回逐位置损失；mean/sum 返回归约结果。",sideEffect:"不修改输入。",example:"L1Loss：prediction=[2,−1]、target=[1,1] → |d|=[1,2]，mean=1.5。"},
+    bce:{title:`${entry.leaf}：计算二分类目标的负对数似然`,what:"对目标 y∈{0,1}，同时计算正类项 −y·log(p) 与负类项 −(1−y)·log(1−p)；logits 版本会用数值稳定等价式。",steps:["取得概率 p 或从 logits 得到稳定概率表达","逐位置计算正类项与负类项之和","应用 weight/pos_weight 后按 reduction 汇总"],returns:"none 返回逐位置损失；mean/sum 返回归约结果。",sideEffect:"不修改输入。",example:"p=0.8、y=1 时损失=−log(0.8)≈0.22314。"},
+    copy_state:{title:`${entry.leaf}：复制张量、建立视图或改变梯度关联`,what:"根据接口决定是否共享底层存储、是否复制元素，以及结果是否继续连接原计算图。",steps:["读取输入的存储、stride 与梯度状态","按 clone/view/detach 等规则建立结果","保留或切断 autograd 关系"],returns:"返回新张量对象；它可能共享存储，也可能拥有独立存储。",sideEffect:n.endsWith("_")?"原地版本修改当前张量的元数据或状态。":"通常不修改输入；共享视图的后续写入可能反映到同一存储。",example:"clone 独立复制数据；view 共享数据；detach 共享数据但结果不再追踪该计算图。"},
+    state:{title:`${entry.leaf}：读取或修改运行时状态`,what:"这类接口处理开关、配置、上下文或对象属性，不对张量元素套用数学公式。",steps:["读取当前状态与调用参数","验证状态切换或属性访问是否合法","返回状态，或把新状态写入指定作用域"],returns:"查询接口返回值；设置接口通常返回 None、旧值或上下文管理器。",sideEffect:/set|enable|disable|clear|reset/.test(n)?"会改变后续调用读取到的状态。":"只读查询不修改状态。",example:`${entry.leaf}(...) 的效果作用于对应模块、线程上下文或进程状态。`},
+    object:{title:`${entry.leaf}：创建或管理一个 PyTorch 对象`,what:"构造函数保存配置并初始化成员；对象方法读取这些成员与调用输入，完成模块、容器、数据集或运行时对象的职责。",steps:["解析构造或方法参数","创建/定位对象内部成员与资源","执行对象行为并返回结果或句柄"],returns:"构造时返回对象实例；方法按职责返回张量、迭代器、状态或 None。",sideEffect:"构造会创建对象状态；训练模块调用可能更新缓冲区，管理方法可能修改成员。",example:`obj=${entry.name}(...)；随后通过 obj(...) 或对象方法使用已保存配置。`},
+    api_behavior:{title:`${entry.leaf}：执行该工具接口定义的具体行为`,what:`它属于“${subcategoryOf(entry)}”，处理 Python 对象、资源或运行时行为，而不是对每个张量元素计算同一个公式。`,steps:["解析调用参数与当前上下文","定位操作需要的对象或后端资源",`执行 ${entry.leaf} 对应行为并生成返回结果`],returns:"在“调用与变量”中按具体签名显示返回对象、句柄、状态或 None。",sideEffect:n.endsWith("_")?"下划线版本通常修改当前对象。":"配置、注册和 I/O 接口可能改变外部状态；查询接口不会。",example:`${entry.name}(...) 的实验会把返回值和发生的状态变化分别列出。`},
+  };
+  const path=entry.name.toLowerCase();
+  if(/all_reduce/.test(path))return {title:"把所有进程的张量归约，并让每个进程得到结果",what:"每个进程提供同 shape 张量；通信后按 SUM、MAX 等 op 逐位置合并。",steps:["每个 rank 提交本地张量","同一坐标的值跨 rank 归约","归约结果写回每个 rank 的张量"],returns:"同步接口完成后各进程持有相同归约结果。",sideEffect:"通常原地修改传入张量。",example:"rank0=[1,2]、rank1=[3,4]，SUM 后两边都为 [4,6]。"};
+  if(/all_gather/.test(path))return {title:"收集所有进程的张量到每个进程",what:"每个 rank 提供一份输入，最终每个 rank 按 rank 顺序得到全部输入。",steps:["各 rank 提交本地张量","交换每个 rank 的数据","按 rank 0…world_size−1 写入输出列表"],returns:"每个进程得到长度为 world_size 的结果集合。",sideEffect:"写入预分配输出容器，不改变输入值。",example:"rank0 提交 [1]、rank1 提交 [2]，两边都得到 [[1],[2]]。"};
+  if(/broadcast/.test(path))return {title:"把源进程的张量复制给其他进程",what:"src rank 的张量作为唯一数据源，其他 rank 的对应张量被相同数值覆盖。",steps:["读取 src rank 张量","发送到通信组内其他 rank","各 rank 写入相同结果"],returns:"同步版本在通信完成后返回。",sideEffect:"非源 rank 的目标张量会被修改。",example:"src=0 的 [1,2] 广播后，所有 rank 都持有 [1,2]。"};
+  if(/reduce_scatter/.test(path))return {title:"先跨进程归约，再把结果分片发送给各进程",what:"它等价于对全部输入做归约后，按 rank 切分结果；每个 rank 只保留自己的分片。",steps:["收集各 rank 输入","逐位置执行 SUM 等归约","把归约结果切片并分发"],returns:"每个 rank 得到一个不同输出分片。",sideEffect:"写入输出张量，不修改输入。",example:"适合把梯度归约与参数分片通信合并。"};
+  if(/send|isend|recv|irecv/.test(path))return {title:"在两个进程之间发送或接收张量",what:"send/isend 指定目标 rank，recv/irecv 指定来源；收发两端的元素数量与 dtype 必须匹配。",steps:["确定通信组、源 rank 与目标 rank","发送端传输张量缓冲区","接收端把数据写入目标张量"],returns:/^i|\.i/.test(n)?"异步版本返回可等待的 Work 句柄。":"同步版本在操作完成后返回。",sideEffect:"接收操作会覆盖接收缓冲区。",example:"rank0 send([1,2])，rank1 recv(buf) 后 buf=[1,2]。"};
+  if(/compile|dynamo/.test(path))return {title:"捕获 Python/PyTorch 执行并生成优化后的可调用对象",what:"第一次运行根据示例输入追踪可编译区域、建立守卫并编译；后续匹配守卫的输入复用已编译代码。",steps:["执行函数并捕获张量运算图","为 shape、dtype 和 Python 状态建立守卫","交给后端生成代码并缓存"],returns:"返回语义等价的可调用对象或编译结果。",sideEffect:"可能产生编译缓存和首次运行开销，不应改变函数数学语义。",example:"compiled=torch.compile(model)；compiled(x) 首次编译，后续复用。"};
+  if(/export|onnx/.test(path))return {title:"把模块与示例输入转换为可部署计算图",what:"根据示例输入记录张量运算、参数和输入约束，并生成目标图表示。",steps:["读取模块与示例输入","捕获前向计算图和参数","验证动态 shape 约束并序列化"],returns:"返回导出图对象，或写出目标模型文件。",sideEffect:"不修改模型参数；文件型接口会写入指定路径。",example:"export(model,(x,)) 得到可检查、可保存的图。"};
+  if(/save|checkpoint/.test(path)&&!/saved_tensors/.test(path))return {title:"把对象状态序列化到存储",what:"遍历对象中的张量和元数据，将它们编码后写入文件或分布式存储。",steps:["收集 state_dict 或待保存对象","序列化张量存储与元数据","写入目标位置并完成提交"],returns:"通常返回 None 或保存元数据。",sideEffect:"会创建或覆盖目标存储内容。",example:"torch.save(state_dict, path) 后可用 torch.load(path) 恢复。"};
+  if(/load/.test(path))return {title:"从存储中反序列化对象或状态",what:"读取保存的元数据与张量数据，根据 map_location 等参数恢复到目标设备。",steps:["读取文件或检查点元数据","重建张量存储和对象结构","映射设备并返回结果"],returns:"返回恢复后的对象、state_dict 或加载元数据。",sideEffect:"直接 load 通常不改模型；load_state_dict 会把值写入现有对象。",example:"state=torch.load(path,map_location='cpu')。"};
+  if(/register/.test(path))return {title:"把函数、实现或钩子登记到注册表",what:"用名称、类型或调度键保存回调，之后对应流程会查找并调用它。",steps:["验证登记名称和适用条件","保存回调或实现到注册表","后续事件发生时按规则调用"],returns:"通常返回注册句柄、装饰器结果或 None。",sideEffect:"会改变进程内注册状态，可能持续到注销或进程结束。",example:`${entry.leaf}(callback) 后，匹配事件会调用 callback。`};
+  if(/remove|unregister|destroy/.test(path))return {title:"移除已注册资源或销毁运行时对象",what:"根据句柄或标识找到目标，解除引用并释放关联状态。",steps:["定位目标资源","停止后续使用或通信","从注册表移除并释放状态"],returns:"通常返回 None 或是否成功。",sideEffect:"目标在调用后不可继续按原方式使用。",example:`调用 ${entry.leaf}(handle) 释放对应资源。`};
+  if(/set_|enable|disable|config/.test(n))return {title:"读取参数并更新运行时配置",what:"把给定选项写入当前后端、模块或全局上下文，影响之后执行的相关操作。",steps:["读取配置名与新值","检查值是否受支持","写入配置并让后续调用读取它"],returns:"通常返回 None、旧值或上下文管理器。",sideEffect:"会改变后续执行行为；作用域可能是线程、上下文或整个进程。",example:`${entry.leaf}(...) 后，相关后续操作采用新设置。`};
+  if(/pad|interpolate|upsample/.test(n))return {title:"按空间参数改变张量边界或采样尺寸",what:"pad 在边界增加指定值或复制边界；interpolate/upsample 根据目标 size 或 scale_factor 计算新采样坐标。",steps:["解析输入空间维和目标尺寸","为每个输出坐标找到输入坐标或边界规则","复制或插值得到输出值"],returns:"返回空间 shape 改变的新张量。",sideEffect:"不修改输入。",example:"interpolate 输入 H×W 到 2H×2W；不同 mode 决定邻近或线性插值。"};
+  if(/normalize|norm/.test(n))return {title:"按指定维度计算范数并缩放输入",what:"先在 dim 上求 Lp 范数，再用每个元素除以该范数（并用 eps 避免除零）。",steps:["沿 dim 计算元素绝对值的 p 次幂和","开 p 次方得到范数","用输入除以 max(范数,eps)"],returns:"返回归一化后的张量或范数值，取决于具体函数。",sideEffect:n.endsWith("_")?"原地版本修改输入。":"默认不修改输入。",example:"L2 normalize([3,4]) = [0.6,0.8]。"};
+  if(guides[family])return guides[family];
+  return {title:`${entry.leaf}：读取参数并执行“${subcategoryOf(entry)}”操作`,what:`${entry.name} 不是逐元素数学算子。它读取调用参数和当前 ${entry.group} 状态，完成名称所指的 ${entry.leaf} 操作。`,steps:[`解析 ${entry.leaf} 所需的位置参数与命名参数`,`定位本次操作涉及的对象、状态或运行时资源`,`执行 ${entry.leaf} 并产生结果；是否写入状态见下方副作用`],returns:`返回类型由 ${entry.leaf} 的用途决定，并在“调用与变量”中显示具体签名。`,sideEffect:n.endsWith("_")?"名称以下划线结尾，通常会原地修改当前对象。":"若该操作涉及注册、配置或 I/O，会修改对应外部状态；纯查询不会修改。",example:`调用 ${entry.name}(...)；页面会把实际返回值和状态变化分开显示。`};
+}
+
 function formulaSpecOf(entry: ApiEntry): FormulaSpec {
   /* eslint-disable no-useless-escape -- LaTeX control sequences are intentionally stored in symbol strings. */
   const n = cleanLeaf(entry), family = familyOf(entry);
+  if (family === "foreach") { const {base,inPlace,rule}=foreachOperation(entry);return {latex:rule?String.raw`Y^{(k)}_i=${rule.latex}`:String.raw`Y^{(k)}=\operatorname{torch.${base}}\!\left(X^{(k)}\right)`,spoken:rule?`对列表中第 k 个张量的第 i 个元素执行${rule.label}。`:`对列表中每个张量分别执行 torch.${base}。`,explanation:`公式里的 x 就是当前元素 X^(k)_i。k 是张量列表索引，i 是张量内部元素位置。${inPlace?"下划线版本把 Y 写回 X。":"非下划线版本创建新张量列表。"}`,symbols:[{symbol:"k",meaning:"输入列表中第几个 Tensor"},{symbol:"i",meaning:"当前 Tensor 内的元素位置"},{symbol:"x",meaning:"当前输入元素，也就是 X^(k)_i"},{symbol:String.raw`X^{(k)}_i`,meaning:"第 k 个输入张量位置 i 的元素"},{symbol:String.raw`Y^{(k)}_i`,meaning:inPlace?"写回原张量的结果元素":"第 k 个新输出张量的结果元素"}]}; }
   if (family === "matmul") return { latex: String.raw`C_{ij}=\sum_{k=1}^{K}A_{ik}B_{kj}`, spoken: "输出矩阵第 i 行第 j 列，等于 A 的第 i 行与 B 的第 j 列做点积。", explanation: "固定输出位置 (i,j)，把左矩阵这一行和右矩阵这一列的对应元素相乘，再把 K 个乘积相加。", symbols: [{symbol:String.raw`A\in\mathbb{R}^{M\times K}`,meaning:"左输入矩阵，M 行 K 列"},{symbol:String.raw`B\in\mathbb{R}^{K\times N}`,meaning:"右输入矩阵，K 行 N 列"},{symbol:String.raw`C\in\mathbb{R}^{M\times N}`,meaning:"输出矩阵"},{symbol:"i,j,k",meaning:"输出行、输出列、点积累加索引"}] };
   if (family === "cross_entropy") return { latex: String.raw`\ell_n=-\log\!\left(\frac{\exp(x_{n,y_n})}{\sum_{c=1}^{C}\exp(x_{n,c})}\right),\qquad L=\frac{1}{N}\sum_{n=1}^{N}\ell_n`, spoken: "每个样本先把 logits 转成类别概率，取真实类别的负对数，再对批次求平均。", explanation: "这是目标为类别索引、reduction='mean' 时的官方定义；数值实现通常先减去每行最大值以避免指数溢出。", symbols: [{symbol:"x_{n,c}",meaning:"第 n 个样本对第 c 类的未归一化分数 logit"},{symbol:"y_n",meaning:"第 n 个样本的真实类别索引，范围为 0 到 C−1"},{symbol:"C",meaning:"类别总数"},{symbol:"N",meaning:"批次中的样本数"},{symbol:String.raw`\ell_n,\,L`,meaning:"单样本损失与批次平均损失"}] };
   if (family === "mse") return { latex: String.raw`\ell_n=(x_n-y_n)^2,\qquad L=\frac{1}{N}\sum_{n=1}^{N}\ell_n`, spoken: "逐元素计算预测与目标之差的平方，然后对所有元素取平均。", explanation: "对应 PyTorch MSELoss 在 reduction='mean' 时的定义；N 是输入张量的元素总数，不只表示 batch 大小。", symbols: [{symbol:"x_n",meaning:"第 n 个预测值"},{symbol:"y_n",meaning:"第 n 个目标值，与 x 形状相同"},{symbol:"N",meaning:"参与归约的元素总数"},{symbol:String.raw`\ell_n,\,L`,meaning:"逐元素平方误差与最终平均损失"}] };
@@ -66,8 +151,8 @@ function formulaSpecOf(entry: ApiEntry): FormulaSpec {
   if (family === "pooling") return n.includes("avg") ? { latex:String.raw`Y_{n,c,i,j}=\frac{1}{|\Omega_{ij}|}\sum_{(u,v)\in\Omega_{ij}}X_{n,c,u,v}`,spoken:"对当前池化窗口中的全部值求平均。",explanation:"每个通道独立池化；Ωᵢⱼ 是由 kernel_size、stride、padding 决定的当前窗口。",symbols:[{symbol:String.raw`\Omega_{ij}`,meaning:"输出位置 (i,j) 对应的输入窗口"},{symbol:String.raw`|\Omega_{ij}|`,meaning:"窗口内元素数量"},{symbol:String.raw`X,\,Y`,meaning:"输入张量与池化输出"}] } : { latex:String.raw`Y_{n,c,i,j}=\max_{(u,v)\in\Omega_{ij}}X_{n,c,u,v}`,spoken:"从当前池化窗口中选出最大值。",explanation:"MaxPool 不混合通道，只在每个通道的局部窗口内取最大值。",symbols:[{symbol:String.raw`\Omega_{ij}`,meaning:"输出位置 (i,j) 对应的输入窗口"},{symbol:String.raw`n,\,c`,meaning:"样本索引与通道索引"},{symbol:String.raw`X,\,Y`,meaning:"输入张量与池化输出"}] };
   if (family === "linear") return { latex:String.raw`Y=XW^{\mathsf T}+b,\qquad y_j=b_j+\sum_{i=1}^{H_{\mathrm{in}}}x_iW_{j,i}`,spoken:"输入向量乘权重矩阵的转置，再加上偏置。",explanation:"这是 PyTorch Linear 的官方变换形式。最后一维必须等于 in_features，输出最后一维等于 out_features。",symbols:[{symbol:"X",meaning:"输入，最后一维大小为 Hᵢₙ"},{symbol:"W",meaning:"可学习权重，形状为 (Hₒᵤₜ,Hᵢₙ)"},{symbol:"b",meaning:"可选偏置，长度为 Hₒᵤₜ"},{symbol:"Y",meaning:"线性变换输出"}] };
   if (family === "activation") {
-    const specs:Record<string,[string,string]>={relu:[String.raw`\operatorname{ReLU}(x)=\max(0,x)`,"负数变为 0，非负数保持不变。"],sigmoid:[String.raw`\sigma(x)=\frac{1}{1+\exp(-x)}`,"把任意实数压缩到 0 与 1 之间。"],tanh:[String.raw`\tanh(x)=\frac{\exp(x)-\exp(-x)}{\exp(x)+\exp(-x)}`,"把输入压缩到 −1 与 1 之间。"],gelu:[String.raw`\operatorname{GELU}(x)=x\,\Phi(x)`,"用标准正态分布累计概率平滑地门控输入。"],silu:[String.raw`\operatorname{SiLU}(x)=x\,\sigma(x)`,"输入乘以自身的 Sigmoid 门值。"],leaky_relu:[String.raw`\operatorname{LeakyReLU}(x)=\max(0,x)+\alpha\min(0,x)`,"负半轴保留斜率 α，避免梯度完全为零。"],elu:[String.raw`\operatorname{ELU}(x)=\begin{cases}x,&x>0\\ \alpha(\exp(x)-1),&x\le0\end{cases}`,"正半轴保持线性，负半轴指数饱和。"],softplus:[String.raw`\operatorname{Softplus}(x)=\frac1\beta\log(1+\exp(\beta x))`,"ReLU 的平滑近似。"]};
-    const [latex,spoken]=specs[n]??[String.raw`Y=f(X)`,"把激活函数逐元素应用到输入张量。"];return {latex,spoken,explanation:"激活函数逐元素计算，因此默认不改变张量形状。",symbols:[{symbol:"x,\,y",meaning:"单个输入元素与对应输出元素"},{symbol:"\alpha,\,\beta",meaning:"部分激活函数使用的斜率或平滑参数"},{symbol:"\Phi",meaning:"标准正态分布的累积分布函数"}]};
+    const specs:Record<string,[string,string]>={relu:[String.raw`\operatorname{ReLU}(x)=\max(0,x)`,"负数变为 0，非负数保持不变。"],relu6:[String.raw`\operatorname{ReLU6}(x)=\min(\max(0,x),6)`,"先把负数截为 0，再把大于 6 的值截为 6。"],sigmoid:[String.raw`\sigma(x)=\frac{1}{1+\exp(-x)}`,"把任意实数压缩到 0 与 1 之间。"],tanh:[String.raw`\tanh(x)=\frac{\exp(x)-\exp(-x)}{\exp(x)+\exp(-x)}`,"把输入压缩到 −1 与 1 之间。"],gelu:[String.raw`\operatorname{GELU}(x)=x\,\Phi(x)`,"用标准正态分布累计概率平滑地门控输入。"],silu:[String.raw`\operatorname{SiLU}(x)=x\,\sigma(x)`,"输入乘以自身的 Sigmoid 门值。"],leaky_relu:[String.raw`\operatorname{LeakyReLU}(x)=\max(0,x)+\alpha\min(0,x)`,"负半轴保留斜率 α，避免梯度完全为零。"],elu:[String.raw`\operatorname{ELU}(x)=\begin{cases}x,&x>0\\ \alpha(\exp(x)-1),&x\le0\end{cases}`,"正半轴保持线性，负半轴指数饱和。"],selu:[String.raw`\operatorname{SELU}(x)=\lambda\begin{cases}x,&x>0\\ \alpha(\exp(x)-1),&x\le0\end{cases}`,"先做 ELU 形状变换，再乘固定缩放系数 λ。"],softplus:[String.raw`\operatorname{Softplus}(x)=\frac1\beta\log(1+\exp(\beta x))`,"ReLU 的平滑近似。"]};
+    const [latex,spoken]=specs[n]??[String.raw`Y_i=\operatorname{${n.replace(/_/g,"\\_")} }(X_i)`,`对位置 i 的输入执行 ${entry.leaf} 明确命名的激活运算。`];return {latex,spoken,explanation:"激活函数逐元素计算，因此默认不改变张量形状。",symbols:[{symbol:"x,\,y",meaning:"单个输入元素与对应输出元素"},{symbol:"\alpha,\,\beta,\,\lambda",meaning:"部分激活函数使用的斜率、平滑或缩放参数"},{symbol:"\Phi",meaning:"标准正态分布的累积分布函数"}]};
   }
   if (family === "reduction") {
     if (/mean/.test(n)) return {latex:String.raw`\mu=\frac{1}{N}\sum_{i=1}^{N}x_i`,spoken:"把指定维度的 N 个元素相加后除以 N。",explanation:"未指定 dim 时归约全部元素；指定 dim 时对每个切片分别计算。",symbols:[{symbol:"x_i",meaning:"归约切片中的第 i 个元素"},{symbol:"N",meaning:"该切片的元素数量"},{symbol:"\mu",meaning:"算术平均值"}]};
@@ -76,7 +161,7 @@ function formulaSpecOf(entry: ApiEntry): FormulaSpec {
     const op=/max|amax|argmax/.test(n)?"\max":/min|amin|argmin/.test(n)?"\min":"\sum";return {latex:String.raw`y=${op}_{1\le i\le N}x_i`,spoken:op==="\\sum"?"把指定维度中的全部元素相加。":"在指定维度中寻找极值。",explanation:"argmax/argmin 返回极值位置索引；max/min 返回极值本身。",symbols:[{symbol:"x_i",meaning:"归约切片中的第 i 个元素"},{symbol:"N",meaning:"归约元素数量"},{symbol:"y",meaning:"归约后的值或索引"}]};
   }
   if (family === "binary") { const ops:Record<string,string>={add:"+",sub:"-",mul:"\\cdot",multiply:"\\cdot",div:"/",divide:"/",pow:"^{\,b}",remainder:"\\bmod"};const op=ops[n]??"+";const latex=n==="pow"?String.raw`Y_i=X_i^{\,b}`:String.raw`Y_i=X_i ${op} B_i`;return {latex,spoken:"按广播规则对两个输入逐元素计算。",explanation:"如果两个张量形状不同，PyTorch 会从最后一维开始按 broadcasting 规则对齐；标量会扩展到每个位置。",symbols:[{symbol:"X_i",meaning:"第一个输入在位置 i 的元素"},{symbol:"B_i\text{ 或 }b",meaning:"广播后的第二个输入元素或标量"},{symbol:"Y_i",meaning:"位置 i 的输出"}]}; }
-  if (family === "unary") { const map:Record<string,string>={abs:String.raw`y=|x|`,absolute:String.raw`y=|x|`,neg:String.raw`y=-x`,negative:String.raw`y=-x`,exp:String.raw`y=e^x`,log:String.raw`y=\ln x`,log10:String.raw`y=\log_{10}x`,log2:String.raw`y=\log_2x`,sqrt:String.raw`y=\sqrt{x}`,square:String.raw`y=x^2`,reciprocal:String.raw`y=\frac1x`,sin:String.raw`y=\sin x`,cos:String.raw`y=\cos x`,tan:String.raw`y=\tan x`,floor:String.raw`y=\lfloor x\rfloor`,ceil:String.raw`y=\lceil x\rceil`};return {latex:map[n]??String.raw`Y_i=f(X_i)`,spoken:"对输入张量中的每个元素独立应用该数学函数。",explanation:"逐元素算子通常保持 shape 不变；对数、平方根、倒数等函数还要求输入位于有效定义域。",symbols:[...xySymbols,{symbol:"i",meaning:"张量中的元素位置"}]}; }
+  if (family === "unary") { const rule=foreachUnaryRules[n]??foreachUnaryRules[n.replace(/_$/,"")];const map:Record<string,string>={absolute:String.raw`|x|`,negative:String.raw`-x`,square:String.raw`x^2`};const expression=rule?.latex??map[n]??String.raw`\operatorname{${n.replace(/_/g,"\\_")}}(x)`;return {latex:String.raw`Y_i=${expression}`,spoken:rule?`对输入第 i 个元素执行${rule.label}。`:`对输入第 i 个元素执行 ${entry.leaf} 定义的运算。`,explanation:"公式里的 x 就是输入位置 i 的数值 X_i；输出通常与输入 shape 相同。",symbols:[{symbol:"i",meaning:"张量中的具体元素位置"},{symbol:"x",meaning:"当前输入元素，也就是 X_i"},{symbol:"X_i",meaning:"输入位置 i 的数值"},{symbol:"Y_i",meaning:"该位置计算后的输出数值"}]}; }
   if (family === "autograd") return {latex:String.raw`\frac{\partial L}{\partial x}=\frac{\partial L}{\partial y}\,\frac{\partial y}{\partial x}`,spoken:"反向传播用链式法则，把上游梯度乘以当前运算的局部导数。",explanation:"对于非标量输出，backward 还需传入与输出同形状的 grad_output，用它计算向量—雅可比积。",symbols:[{symbol:"L",meaning:"最终标量目标或损失"},{symbol:"x,\,y",meaning:"当前计算图节点的输入与输出"},{symbol:"\partial L/\partial y",meaning:"从后续节点传来的上游梯度"},{symbol:"\partial y/\partial x",meaning:"当前运算的局部导数"}]};
   if (family === "reshape") return {latex:String.raw`\prod_{r=1}^{R}d_r=\prod_{s=1}^{S}d'_s,\qquad \operatorname{vec}(Y)=\operatorname{vec}(X)`,spoken:"变形前后元素总数相同，并保持元素的线性顺序。",explanation:"reshape 只重新解释维度分组；若内存布局允许会返回 view，否则可能复制数据。",symbols:[{symbol:"d_r",meaning:"输入 shape 的第 r 个维度"},{symbol:"d'_s",meaning:"目标 shape 的第 s 个维度"},{symbol:"\operatorname{vec}",meaning:"按存储顺序展开为一维序列"}]};
   if (family === "transpose") return {latex:String.raw`Y_{i,j}=X_{j,i}`,spoken:"交换两个维度的索引位置。",explanation:"二维转置把行变成列；高维 transpose 只交换指定的两个维度。",symbols:[{symbol:"X_{j,i}",meaning:"输入在交换后索引处的元素"},{symbol:"Y_{i,j}",meaning:"输出位置 (i,j) 的元素"}]};
@@ -89,7 +174,7 @@ function formulaSpecOf(entry: ApiEntry): FormulaSpec {
   if (["squeeze","combine","split","indexing","inspection"].includes(family)) return {latex:String.raw`Y_{\boldsymbol{i}}=X_{\phi(\boldsymbol{i})}`,spoken:"数值保持不变，由索引映射 φ 决定元素在输出中的位置。",explanation:"这类操作主要改变 shape、维度或索引组织；具体映射由 dim、shape、index 等参数决定。",symbols:[{symbol:"\boldsymbol{i}",meaning:"输出张量的多维索引"},{symbol:"\phi",meaning:"当前变形或索引操作定义的位置映射"},{symbol:"X,\,Y",meaning:"输入张量与输出张量"}]};
   if (family === "creation") return {latex:String.raw`Y_{i_1,\ldots,i_D}=c,\qquad \operatorname{shape}(Y)=(d_1,\ldots,d_D)`,spoken:"按照目标 shape 创建张量，并按接口规则写入元素。",explanation:"zeros、ones、full 分别令 c 为 0、1 或 fill_value；eye 只把主对角线置为 1。",symbols:[{symbol:"D",meaning:"张量维数"},{symbol:"d_1,\ldots,d_D",meaning:"各维长度"},{symbol:"c",meaning:"填充值"}]};
   if (family === "random" || family === "distribution") return {latex:String.raw`X_i\overset{\mathrm{i.i.d.}}{\sim}\mathcal{D}(\boldsymbol{\theta})`,spoken:"每个元素按照指定分布及其参数独立采样。",explanation:"设置随机种子可以复现实验；分布 D 和参数 θ 由当前随机接口决定。",symbols:[{symbol:"X_i",meaning:"第 i 个随机样本"},{symbol:"\mathcal D",meaning:"均匀、正态、伯努利等概率分布"},{symbol:"\boldsymbol\theta",meaning:"分布参数，如均值、标准差或概率"},{symbol:"\mathrm{i.i.d.}",meaning:"独立同分布"}]};
-  return {latex:String.raw`Y=\mathcal{F}(X;\boldsymbol{\theta})`,spoken:"接口 F 使用参数 θ 处理输入 X 并产生输出 Y。",explanation:"该接口没有独立的通用标量公式；请以官方签名、输入约束和实验过程为准。",symbols:[{symbol:"\mathcal F",meaning:`当前接口 ${entry.name}`},{symbol:"X",meaning:"输入张量、对象或状态"},{symbol:"\boldsymbol\theta",meaning:"影响接口行为的参数集合"},{symbol:"Y",meaning:"返回值或更新后的状态"}]};
+  return {latex:"",spoken:"该接口不是可用一个标量等式说明的数学运算。",explanation:"此处直接展示具体处理步骤、返回值与副作用，不用空泛的函数符号充当数学公式。",symbols:[]};
 }
 
 function MathExpression({ latex, spoken, inline = false }: { latex: string; spoken: string; inline?: boolean }) {
@@ -99,11 +184,17 @@ function MathExpression({ latex, spoken, inline = false }: { latex: string; spok
 
 function FormulaPanel({ entry, compact = false }: { entry: ApiEntry; compact?: boolean }) {
   const formula = formulaSpecOf(entry);
+  if(!formula.latex)return <div className={`formula-panel formula-panel--process ${compact ? "formula-panel--compact" : ""}`}><b>此接口没有独立数学公式</b><p>{formula.explanation}</p>{!compact&&<a className="formula-source" href={entry.url} target="_blank" rel="noreferrer">查看官方行为定义 ↗</a>}</div>;
   return <div className={`formula-panel ${compact ? "formula-panel--compact" : ""}`}>
     <MathExpression latex={formula.latex} spoken={formula.spoken} />
     <p className="formula-reading"><b>怎么读：</b>{formula.spoken}</p>
     {!compact && <><p className="formula-note">{formula.explanation}</p><div className="formula-symbols"><span>公式变量</span><dl>{formula.symbols.map((item) => <div key={item.symbol}><dt><MathExpression latex={item.symbol} spoken={item.symbol} inline /></dt><dd>{item.meaning}</dd></div>)}</dl></div><a className="formula-source" href={entry.url} target="_blank" rel="noreferrer">依据 PyTorch 官方定义 · 查看原文 ↗</a></>}
   </div>;
+}
+
+function OperationGuidePanel({entry,compact=false}:{entry:ApiEntry;compact?:boolean}){
+  const guide=operationGuideOf(entry);
+  return <div className={`operation-guide ${compact?"operation-guide--compact":""}`}><h5>{guide.title}</h5><p>{guide.what}</p>{!compact&&<><ol>{guide.steps.map((step,index)=><li key={step}><span>{index+1}</span><p>{step}</p></li>)}</ol><div className="operation-contract"><div><b>返回值</b><p>{guide.returns}</p></div><div><b>副作用</b><p>{guide.sideEffect}</p></div></div><div className="operation-example"><b>看得懂的例子</b><code>{guide.example}</code></div></>}</div>;
 }
 
 function variablesOf(entry: ApiEntry, remote?: RemoteDoc | null): Variable[] {
@@ -127,21 +218,17 @@ function variablesOf(entry: ApiEntry, remote?: RemoteDoc | null): Variable[] {
   return base;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function conceptOf(entry: ApiEntry) {
-  const endings: Record<string, string> = {
-    "Tensor 方法": "它作用于已有 Tensor；重点观察 shape、dtype、device、是否原地修改以及梯度关系。",
-    "神经网络模块": "它属于网络层或训练组件；重点理解构造参数、forward 输入输出和可学习参数。",
-    "优化器": "它负责根据梯度更新参数；重点理解学习率、状态缓存和 step/zero_grad 生命周期。",
-    "自动微分": "它参与计算图与梯度传播；重点理解叶子张量、grad_fn、梯度累积和图释放。",
-    "分布式训练": "它涉及多个进程或设备协作；浏览器提供通信步骤预演，真实执行需要初始化进程组。",
-    "设备与加速": "它依赖硬件后端；实验区展示设备和状态变化，真实执行结果由本机硬件决定。",
-    "数据加载": "它组织样本、批次与并行加载；重点看索引、采样、collate 和 batch 形状。",
-    "模型导出": "它把动态图或模块转换为可部署表示；重点看输入约束、动态维度和目标格式。",
-  };
-  return `${entry.summary}。${endings[entry.group] ?? "实验时先确认输入类型和形状，再观察返回值、广播规则与副作用。"}`;
+  const family=familyOf(entry), n=cleanLeaf(entry);
+  if(family==="foreach"){const {base,inPlace,rule}=foreachOperation(entry);return `接收一个 Tensor 列表，对列表中的每个 Tensor ${rule?`逐元素${rule.label}`:`执行 torch.${base}`}${inPlace?"，并把结果原地写回输入张量":"，返回同样长度的新 Tensor 列表"}。每个张量独立处理，不会把不同张量广播成一个共同 shape。`;}
+  const familyConcepts:Record<string,string>={
+    unary:"对输入的每个元素独立执行名称对应的数学运算，输出位置与输入位置一一对应，shape 通常不变。",binary:"先按广播规则对齐两个输入，再在每个位置执行名称对应的二元运算。",reduction:"沿 dim 取出每个切片，并把切片内多个元素合成求和、均值、极值或索引。",convolution:"让卷积核在输入空间轴上滑动；每个输出位置等于当前窗口与核的逐项乘积之和再加偏置。",pooling:"在每个局部窗口内取最大值或平均值，不混合不同通道。",reshape:"保持元素总数与线性顺序不变，只改变这些元素如何组成维度。",transpose:"交换指定维度的索引含义，使元素移动到交换坐标后的输出位置。",matmul:"把左输入的行与右输入的列做点积，并将每个点积写入相应输出坐标。",sequence:"从起点开始按固定间隔生成数列，直到元素数量或终点条件满足。",creation:"按指定 shape 分配张量，并按 zeros、ones、full、eye 等规则填充每个位置。",random:"按指定概率分布与参数生成每个输出元素。",autograd:"沿计算图反向应用链式法则，把上游梯度传到输入或参数。",sorting:"比较指定维度上的元素并重新排列，同时按接口决定是否返回原位置索引。",selection:"根据布尔条件或索引，从输入中选择对应元素组成输出。",indexing:"按 index 指定的坐标读取或写入元素。",fft:"把采样序列分解为复数频率分量。",optimizer:"用当前梯度和优化器状态计算参数更新量并修改参数。"};
+  return familyConcepts[family]??`${entry.leaf} 属于“${subcategoryOf(entry)}”。它${n.endsWith("_")?"可能原地修改输入；":""}按官方签名接收参数并执行对应的 ${entry.group} 操作；下方处理流程会分别说明输入、步骤、返回值与副作用。`;
 }
 
 function scenarioOf(entry: ApiEntry) {
+  if(familyOf(entry)==="foreach")return foreachOperation(entry).inPlace?"在优化器或批量参数更新中，一次原地处理多个 Tensor，减少逐张量发起运算的开销":"在优化器或批量张量处理中，一次对多个 Tensor 执行相同逐元素运算并获得新列表";
   const map: Record<string, string> = {
     "Tensor 方法": "在模型前向计算中直接处理一个已有张量",
     "神经网络函数": "在 forward 中以函数形式完成一次无状态运算",
@@ -160,6 +247,7 @@ function scenarioOf(entry: ApiEntry) {
 
 function familyOf(entry: ApiEntry) {
   const n = cleanLeaf(entry);
+  if (/^_foreach_/.test(n)) return "foreach";
   if (/backward|^grad$|gradients?/.test(n) || entry.group === "自动微分") return "autograd";
   if (/cross.*entropy/.test(n)) return "cross_entropy";
   if (/mse/.test(n)) return "mse";
@@ -207,7 +295,7 @@ const familyLabels: Record<string, string> = {
   squeeze:"增删单维",transpose:"维度交换",combine:"拼接与堆叠",split:"拆分与解绑",reduction:"统计与归约",sorting:"排序与 Top-K",counting:"去重、计数与直方图",
   selection:"条件选择",indexing:"索引、Gather 与 Scatter",binary:"二元逐元素运算",comparison:"比较与近似判断",unary:"一元数学函数",sequence:"等差与等距序列",creation:"张量创建与填充",
   random:"随机采样",fft:"傅里叶变换",linalg:"线性代数",optimizer:"参数优化与调度",distribution:"概率分布与变换",dataloader:"数据集、采样与批处理",inspection:"形状与存储检查",
-  copy_state:"复制、视图与梯度状态",device:"设备与数据类型",predicate:"能力与状态判断",state:"配置、属性与开关",object:"类、容器与对象",api_behavior:"其他接口与工具",
+  copy_state:"复制、视图与梯度状态",device:"设备与数据类型",predicate:"能力与状态判断",state:"配置、属性与开关",foreach:"Foreach 批量张量运算",object:"类、容器与对象",api_behavior:"其他接口与工具",
 };
 
 function subcategoryOf(entry: ApiEntry) {
@@ -523,6 +611,7 @@ function PositionCalculationDialog({ detail, onClose }: { detail: PositionDetail
 function highlightCells(entry: ApiEntry, spec: Record<string, unknown>, sim: Simulation, step: number, item: TensorItem, side: "input" | "output") {
   const family = familyOf(entry), count = visualLeaves(item.value).length;
   if (!count) return [];
+  if(family==="foreach"){const tensorIndex=Number(item.key.split(".").at(-1));return step===tensorIndex+1?Array.from({length:count},(_,index)=>index):[];}
   if (family === "matmul") {
     const a = spec.input as number[][], b = spec.other as number[][], cols = b?.[0]?.length ?? 1;
     const row = Math.floor(step / cols), col = step % cols;
@@ -559,7 +648,9 @@ function highlightCells(entry: ApiEntry, spec: Record<string, unknown>, sim: Sim
 
 function CalculationVisualizer({ entry, source, sim }: { entry: ApiEntry; source: string; sim: Simulation }) {
   const parsed = useMemo(() => { try { return JSON.parse(source) as Record<string, unknown>; } catch { return {}; } }, [source]);
-  const inputs = inputTensors(parsed), outputs = outputTensors(sim.value);
+  const foreach=familyOf(entry)==="foreach",foreachInputs=Array.isArray(parsed.tensors)?parsed.tensors:[],foreachResult=inPlaceResult(entry,sim.value);
+  const inputs = foreach?foreachInputs.map((value,index)=>({key:`tensors.${index}`,label:`输入 Tensor ${index}`,value})):inputTensors(parsed);
+  const outputs = foreach&&Array.isArray(foreachResult)?foreachResult.map((value,index)=>({key:`tensors.${index}`,label:`输出 Tensor ${index}`,value})):outputTensors(sim.value);
   const [step, setStep] = useState(0), [playing, setPlaying] = useState(false), [detailOpen, setDetailOpen] = useState(false);
   const total = Math.max(1, sim.trace.length), safeStep = Math.min(step, total - 1);
   const detail=positionDetail(entry,parsed,sim,safeStep);
@@ -585,6 +676,8 @@ function CalculationVisualizer({ entry, source, sim }: { entry: ApiEntry; source
     {detailOpen&&detail&&<PositionCalculationDialog detail={detail} onClose={()=>setDetailOpen(false)} />}
   </section>;
 }
+
+function inPlaceResult(entry:ApiEntry,value:unknown){if(familyOf(entry)==="foreach"&&foreachOperation(entry).inPlace&&value&&typeof value==="object")return (value as Record<string,unknown>).mutated_inputs;return value;}
 
 function defaultSpec(entry: ApiEntry) {
   const family = familyOf(entry), n = cleanLeaf(entry), v = seededValues(entry);
@@ -627,7 +720,8 @@ function defaultSpec(entry: ApiEntry) {
     predicate: { input: [1, 2, 3], device: "cpu", dtype: "float32", condition: entry.leaf },
     state: { setting: entry.name, before: false, requested: true },
     object: { constructor: entry.name, arguments: { input_features: v[0] + 2, output_features: v[1] + 1 }, sample_input_shape: [2, v[0] + 2] },
-    api_behavior: { api: entry.name, example_values: v, operation: entry.summary, parameter_hint: entry.type === "method" ? "在对应对象上调用" : entry.type === "function" ? "把示例值替换进官方签名" : "按构造参数创建对象" },
+    foreach: { tensors: [[1.2,-1.8,2.0],[[2.3,-0.2],[4.0,4.8]]] },
+    api_behavior: { api: entry.name, example_values: v, operation: operationGuideOf(entry).title, parameter_hint: entry.type === "method" ? "在对应对象上调用" : entry.type === "function" ? "把示例值替换进官方签名" : "按构造参数创建对象" },
   };
   return JSON.stringify({ api: entry.name, ...specs[family] as Record<string, unknown> }, null, 2);
 }
@@ -676,7 +770,8 @@ function simulate(entry: ApiEntry, source: string): Simulation {
   else if (family === "state") { value={setting:spec.setting,before:spec.before,after:spec.requested,changed:spec.before!==spec.requested};mode="对象与状态";title="配置值变化";trace=[`读取 ${spec.setting} = ${spec.before}`,`写入请求值 ${spec.requested}`,`最终值 = ${spec.requested}`];}
   else if (family === "predicate") { const result=n.includes("available")?spec.device==="cpu":n.includes("float")?spec.dtype.includes("float"):Array.isArray(spec.input);value={condition:entry.leaf,result};mode="对象与状态";title="条件判断结果";trace=[`读取对象属性 device=${spec.device}, dtype=${spec.dtype}`,`应用判断 ${entry.leaf}`,`返回布尔值 ${result}`];}
   else if (family === "object") { value={type:entry.name,constructor_arguments:spec.arguments,created:true,sample_input_shape:spec.sample_input_shape};mode="对象与状态";title="对象构造结果";trace=[`解析 ${entry.leaf} 构造参数`,`创建 ${entry.name} 实例`,`记录输入约束 shape=${JSON.stringify(spec.sample_input_shape)}`];}
-  else { const vals=spec.example_values??seededValues(entry);value={api:entry.name,example_call:entry.name.startsWith("torch.Tensor.")?`tensor.${entry.leaf}(${vals.join(", ")})`:`${entry.name}(${vals.join(", ")})`,input_values:vals,operation:entry.summary,execution_requirement:`需要原生 PyTorch 的 ${entry.group} 运行环境`};mode="对象与状态";title="该接口无独立数学公式";trace=[`专属示例值由接口名稳定生成：[${vals}]`,`根据接口类型组装调用：${entry.leaf}(${vals.join(", ")})`,`此接口的真实结果依赖原生 PyTorch 对象；页面不虚构数值`];}
+  else if (family === "foreach") { const {base,inPlace,rule}=foreachOperation(entry),tensors=spec.tensors as unknown[];const calculate=(x:number)=>rule?rule.example(x):x;const outputs=tensors.map(tensor=>mapDeep(tensor,calculate));value=inPlace?{returned:null,mutated_inputs:outputs}:outputs;mode="数值计算";title=`${entry.leaf} 已处理 ${tensors.length} 个张量`;trace=tensors.map((tensor,k)=>{const before=flat(tensor),after=flat(outputs[k]);return `Tensor ${k}：${before.map((x,i)=>`${x} → ${after[i]}`).join("，")}`;});trace.unshift(`列表长度 ${tensors.length}；逐个张量执行 torch.${base}，张量之间不广播`);trace.push(inPlace?"名称以下划线结尾：结果写回输入张量，返回 None":"创建并返回同样长度的新 Tensor 列表，原输入不变");}
+  else { const vals=spec.example_values??seededValues(entry),guide=operationGuideOf(entry);value={api:entry.name,example_call:entry.name.startsWith("torch.Tensor.")?`tensor.${entry.leaf}(${vals.join(", ")})`:`${entry.name}(${vals.join(", ")})`,input_values:vals,operation:guide.title,returns:guide.returns,side_effect:guide.sideEffect};mode="对象与状态";title=guide.title;trace=[...guide.steps,guide.returns,guide.sideEffect];}
   return { mode, title, value: roundDeep(value), trace };
 }
 
@@ -714,21 +809,21 @@ export default function FullApiBrowser() {
   }
 
   return <section className="docs-atlas" id="all-apis">
-    <div className="docs-atlas__intro"><div><p className="eyebrow">PYTORCH 2.13 · EVERY API IS A LAB</p><h2>9,066 个接口，全部进入深度实验</h2><p>选择任意官方 API，立即得到中文作用、精确签名、参数解释、核心关系式、调用示例、应用场景与输入输出实验。数值算子直接计算；硬件、分布式、编译等接口进行真实约束下的结构预演。</p></div><div className="docs-atlas__stats"><div><strong>{entries.length.toLocaleString("zh-CN")}</strong><span>深度实验</span></div><div><strong>{groupCounts.length}</strong><span>学习模块</span></div><div><strong>100%</strong><span>API 覆盖</span></div></div></div>
+    <div className="docs-atlas__intro"><div><p className="eyebrow">PYTORCH 2.13 · EVERY API IS A LAB</p><h2>9,066 个接口，全部进入深度实验</h2><p>选择任意官方 API，立即得到中文作用、精确签名、参数解释、核心关系式、调用示例、应用场景与输入输出实验。数值算子展示实际计算；对象、硬件、分布式与编译接口展示具体步骤、返回值和状态变化。</p></div><div className="docs-atlas__stats"><div><strong>{entries.length.toLocaleString("zh-CN")}</strong><span>深度实验</span></div><div><strong>{groupCounts.length}</strong><span>学习模块</span></div><div><strong>100%</strong><span>API 覆盖</span></div></div></div>
     <div className="docs-kind-tabs" role="tablist" aria-label="按接口种类浏览">{(["函数","类","方法","其他"] as ApiKind[]).map(name=><button role="tab" aria-selected={kind===name} className={kind===name?"active":""} key={name} onClick={()=>applyKind(name)}><span>{name}</span><b>{kindCounts[name].toLocaleString("zh-CN")}</b></button>)}</div>
     <div className="docs-toolbar"><label className="docs-search"><span>⌕</span><input value={query} onChange={(e)=>{setQuery(e.target.value);setPage(0);}} placeholder={`在${kind}中搜索 Conv2d、backward…`} aria-label={`搜索 PyTorch ${kind}`} /><kbd>/</kbd></label><span className="docs-toolbar__path">{kind} › {group} › {subcategory}</span></div>
     <nav className="docs-level-one" aria-label="一级模块"><strong>一级模块</strong><div><button className={group==="全部模块"?"active":""} onClick={()=>applyGroup("全部模块")}>全部 <b>{kindCounts[kind]}</b></button>{groupCountsByKind.map(([name,count])=><button key={name} className={group===name?"active":""} onClick={()=>applyGroup(name)}>{name} <b>{count}</b></button>)}</div></nav>
     <nav className="docs-level-two" aria-label="二级细分类"><div className="docs-level-two__label"><strong>二级分类</strong><span>仅显示当前一级模块的分类</span></div><div className="docs-level-two__tabs" role="tablist"><button role="tab" aria-selected={subcategory==="全部细分类"&&!showComparisonDirectory} className={subcategory==="全部细分类"&&!showComparisonDirectory?"active":""} onClick={()=>{setSubcategory("全部细分类");setShowComparisonDirectory(false);setPage(0);}}>全部 <b>{subcategoryCounts.reduce((sum,item)=>sum+item[1],0)}</b></button>{subcategoryCounts.map(([name,count])=><button role="tab" aria-selected={subcategory===name&&!showComparisonDirectory} key={name} className={subcategory===name&&!showComparisonDirectory?"active":""} onClick={()=>{setSubcategory(name);setShowComparisonDirectory(false);setPage(0);}}>{name} <b>{count}</b></button>)}<button role="tab" aria-selected={showComparisonDirectory} className={`comparison-index-link ${showComparisonDirectory?"active":""}`} onClick={()=>setShowComparisonDirectory(true)}>相似方法对比表 <b>{comparisonCatalog.length}</b></button></div></nav>
     {showComparisonDirectory?<ComparisonDirectory selected={selected} onClose={()=>setShowComparisonDirectory(false)} onOpen={(entry,tab)=>choose(entry,true,tab)}/>:<div className="docs-layout">
-      <div className="docs-results"><div className="docs-results__head"><p>找到 <b>{filtered.length.toLocaleString("zh-CN")}</b> 个{kind} <em>{group} › {subcategory}</em></p><span>第 {safePage+1} / {pages} 页</span></div><div className="api-table" role="table"><div className="api-table__header"><span>接口 / 细分类</span><span>类型</span><span>中文用途</span></div>{visible.map((entry)=><button key={entry.name} className={selected.name===entry.name?"selected":""} onClick={()=>choose(entry)}><div><code>{entry.name}</code><small>{subcategoryOf(entry)}</small></div><span>{entry.typeLabel}</span><p>{entry.summary}</p></button>)}{!visible.length&&<div className="docs-empty">没有匹配的接口，换个关键词试试。</div>}</div><div className="pagination"><button disabled={safePage===0} onClick={()=>setPage(Math.max(0,safePage-1))}>← 上一页</button><span>{filtered.length?safePage*pageSize+1:0}–{Math.min((safePage+1)*pageSize,filtered.length)} / {filtered.length}</span><button disabled={safePage>=pages-1} onClick={()=>setPage(Math.min(pages-1,safePage+1))}>下一页 →</button></div></div>
-      <aside className="api-inspector"><div className="api-inspector__top"><span>{selected.group}<em> › {subcategoryOf(selected)}</em></span><i>{selected.typeLabel}</i></div><h3>{selected.leaf}</h3><code className="api-inspector__path">{selected.name}</code><section><small>它做什么</small><p>{conceptOf(selected)}</p></section><section><small>官方数学定义</small><FormulaPanel entry={selected} compact /></section><section><small>应用场景</small><p>{scenarioOf(selected)}</p></section><button className="official-link" type="button" onClick={()=>choose(selected,false,"overview")}>进入本接口标签页 ↓</button></aside>
+      <div className="docs-results"><div className="docs-results__head"><p>找到 <b>{filtered.length.toLocaleString("zh-CN")}</b> 个{kind} <em>{group} › {subcategory}</em></p><span>第 {safePage+1} / {pages} 页</span></div><div className="api-table" role="table"><div className="api-table__header"><span>接口 / 细分类</span><span>类型</span><span>具体做什么</span></div>{visible.map((entry)=><button key={entry.name} className={selected.name===entry.name?"selected":""} onClick={()=>choose(entry)}><div><code>{entry.name}</code><small>{subcategoryOf(entry)}</small></div><span>{entry.typeLabel}</span><p>{operationGuideOf(entry).title}</p></button>)}{!visible.length&&<div className="docs-empty">没有匹配的接口，换个关键词试试。</div>}</div><div className="pagination"><button disabled={safePage===0} onClick={()=>setPage(Math.max(0,safePage-1))}>← 上一页</button><span>{filtered.length?safePage*pageSize+1:0}–{Math.min((safePage+1)*pageSize,filtered.length)} / {filtered.length}</span><button disabled={safePage>=pages-1} onClick={()=>setPage(Math.min(pages-1,safePage+1))}>下一页 →</button></div></div>
+      <aside className="api-inspector"><div className="api-inspector__top"><span>{selected.group}<em> › {subcategoryOf(selected)}</em></span><i>{selected.typeLabel}</i></div><h3>{selected.leaf}</h3><code className="api-inspector__path">{selected.name}</code><section><small>它具体做什么</small><OperationGuidePanel entry={selected} compact /></section><section><small>数学定义 / 处理规则</small><FormulaPanel entry={selected} compact /></section><section><small>应用场景</small><p>{scenarioOf(selected)}</p></section><button className="official-link" type="button" onClick={()=>choose(selected,false,"overview")}>进入本接口标签页 ↓</button></aside>
     </div>}
 
     <article className="deep-lab" id="deep-lab">
       <header><div><p className="eyebrow">FULL API EXPERIMENT</p><h3>{selected.name}</h3></div><span>{sim.mode}</span></header>
       <div className="deep-lab-tabs" role="tablist" aria-label="接口详情标签页">{([{id:"overview",label:"介绍与公式"},{id:"usage",label:"调用与变量"},{id:"example",label:"Example 与输入"},{id:"result",label:"计算过程与输出"},...(comparisonOf(selected)?[{id:"compare",label:"相似方法区别"}]:[])] as Array<{id:DetailTab;label:string}>).map(tab=><button role="tab" aria-selected={detailTab===tab.id} className={detailTab===tab.id?"active":""} key={tab.id} onClick={()=>setDetailTab(tab.id)}>{tab.label}</button>)}</div>
       <div className="deep-lab__grid">
-        {detailTab==="overview"&&<section className="deep-card deep-card--wide"><small>① 中文解析、官方公式与应用场景</small><h4>{selected.summary}</h4><p>{conceptOf(selected)}</p><div className="deep-formula"><span>标准数学定义</span><FormulaPanel entry={selected} /></div><div className="deep-overview-scenario"><b>什么时候使用</b><p>{scenarioOf(selected)}</p></div></section>}
+        {detailTab==="overview"&&<section className="deep-card deep-card--wide"><small>① 它做什么、怎么算、返回什么</small><OperationGuidePanel entry={selected}/><div className="deep-formula"><span>数学定义 / 明确处理规则</span><FormulaPanel entry={selected} /></div><div className="deep-overview-scenario"><b>什么时候使用</b><p>{scenarioOf(selected)}</p></div></section>}
         {detailTab==="usage"&&<section className="deep-card deep-card--wide"><small>② 官方调用方法</small>{docLoading?<p className="loading-line">正在读取官方签名…</p>:<><pre><code>{remote?.signature||`${selected.name}(*args, **kwargs)`}</code></pre>{remote?.summary&&<p className="official-summary">官方说明：{remote.summary}</p>}</>}<a href={selected.url} target="_blank" rel="noreferrer">核对官方原文 ↗</a></section>}
         {detailTab==="usage"&&<section className="deep-card deep-card--wide"><small>③ 参数与变量地图</small><div className="deep-vars">{variablesOf(selected,remote).map((v)=><div key={v.name}><code>{v.name}</code><p>{v.meaning}</p><span>例：{v.sample}</span></div>)}</div></section>}
         {detailTab==="compare"&&<AlgorithmComparison entry={selected} onSelect={(entry)=>choose(entry,true,"compare")} />}

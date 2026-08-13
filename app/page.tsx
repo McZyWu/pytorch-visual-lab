@@ -437,7 +437,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="coverage-banner" aria-label="接口覆盖说明"><b>9,066</b><span>个官方 API 全部可进入深度实验</span><i>中文解析</i><i>公式变量</i><i>场景 Example</i><i>输入输出预演</i></section>
+      <section className="coverage-banner" aria-label="接口覆盖说明"><b>9,066</b><span>个官方 API 全部可进入深度实验</span><i>中文解析</i><i>公式变量</i><i>场景 Example</i><i>实际计算输出</i></section>
 
       <section className="category-strip" aria-label="深度课程分类">
         {categories.map((item) => <button key={item} className={category === item ? "selected" : ""} onClick={() => setCategory(item)}>{item}{item !== "全部" && <sup>{lessons.filter((l) => l.category === item).length}</sup>}</button>)}
