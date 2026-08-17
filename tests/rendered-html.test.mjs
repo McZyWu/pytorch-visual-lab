@@ -3,12 +3,14 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("includes the full Chinese PyTorch learning experience", async () => {
-  const [page, browser, index, layout, packageJson] = await Promise.all([
+  const [page, beginner, browser, index, layout, packageJson, readme] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/beginner-start.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/full-api-browser.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api-index.generated.json", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../README.md", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /TorchScope/);
@@ -16,9 +18,24 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(page, /torch\.matmul/);
   assert.match(page, /nn\.CrossEntropyLoss/);
   assert.match(page, /核心公式/);
+  assert.match(page, /useState\("tensor"\)/);
+  assert.match(page, /torchscope:completed-lessons/);
+  assert.match(page, /上一课/);
+  assert.match(page, /下一课/);
+  assert.match(page, /教学模拟，不是真实 PyTorch 运行时/);
+  assert.match(beginner, /先完成 15 个重点实验/);
+  assert.match(beginner, /optimizer\.zero_grad/);
+  assert.match(beginner, /loss\.backward/);
+  assert.match(beginner, /optimizer\.step/);
+  assert.match(beginner, /Tensor/);
+  assert.match(beginner, /broadcasting/);
+  assert.match(beginner, /真实训练应在 Python \/ PyTorch/);
   assert.match(browser, /FULL API EXPERIMENT/);
+  assert.match(browser, /按需查询与实验/);
+  assert.match(browser, /event\.key === "\/"/);
+  assert.match(browser, /searchRef\.current\?\.focus/);
   assert.match(browser, /运行本接口实验/);
-  assert.match(browser, /具体步骤、返回值和状态变化/);
+  assert.match(browser, /处理步骤和状态示意/);
   assert.doesNotMatch(browser, /结构预演/);
   assert.match(browser, /运行成功/);
   assert.match(browser, /aria-live="polite"/);
@@ -74,5 +91,7 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.ok(JSON.parse(index).length > 9000);
   assert.match(layout, /lang="zh-CN"/);
   assert.match(packageJson, /"name": "pytorch-visual-lab"/);
+  assert.match(readme, /## 适合谁/);
+  assert.match(readme, /## 教学模拟边界/);
   assert.doesNotMatch(page, /SkeletonPreview|codex-preview/);
 });

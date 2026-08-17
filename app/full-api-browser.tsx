@@ -783,6 +783,7 @@ export default function FullApiBrowser() {
   const [spec, setSpec] = useState(() => defaultSpec(initial)); const [sim, setSim] = useState<Simulation>(() => simulate(initial, defaultSpec(initial))); const [simError, setSimError] = useState("");
   const [runState, setRunState] = useState<"idle" | "running" | "success" | "error">("idle"); const [runCount, setRunCount] = useState(0); const [lastRunAt, setLastRunAt] = useState("");
   const outputRef = useRef<HTMLElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const pageSize = 12;
   const kindCounts=useMemo(()=>Object.fromEntries((["函数","类","方法","其他"] as ApiKind[]).map(name=>[name,entries.filter(entry=>kindOf(entry)===name).length])) as Record<ApiKind,number>,[]);
   const groupCountsByKind=useMemo(()=>Object.entries(entries.filter(entry=>kindOf(entry)===kind).reduce<Record<string,number>>((all,entry)=>(all[entry.group]=(all[entry.group]??0)+1,all),{})).sort((a,b)=>b[1]-a[1]),[kind]);
@@ -792,6 +793,18 @@ export default function FullApiBrowser() {
   const selected=entries.find((item)=>item.name===selectedName)??visible[0]??entries[0];
 
   useEffect(() => { let active=true; fetch(`/api/docs?name=${encodeURIComponent(selected.name)}&url=${encodeURIComponent(selected.url)}`).then((r)=>r.json()).then((data)=>{if(active){setRemote(data);setDocLoading(false);}}).catch(()=>{if(active){setRemote({error:"官方详情暂时无法读取"});setDocLoading(false);}}); return()=>{active=false;}; }, [selected.name,selected.url]);
+  useEffect(() => {
+    const focusSearch = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isEditing = target?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName ?? "");
+      if (event.key === "/" && !isEditing) {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", focusSearch);
+    return () => window.removeEventListener("keydown", focusSearch);
+  }, []);
 
   function applyKind(nextKind:ApiKind){setKind(nextKind);setGroup("全部模块");setSubcategory("全部细分类");setPage(0);setShowComparisonDirectory(false);const first=entries.find(entry=>kindOf(entry)===nextKind);if(first)choose(first);}
   function applyGroup(nextGroup:string){setGroup(nextGroup);setSubcategory("全部细分类");setPage(0);setShowComparisonDirectory(false);}
@@ -809,9 +822,9 @@ export default function FullApiBrowser() {
   }
 
   return <section className="docs-atlas" id="all-apis">
-    <div className="docs-atlas__intro"><div><p className="eyebrow">PYTORCH 2.13 · EVERY API IS A LAB</p><h2>9,066 个接口，全部进入深度实验</h2><p>选择任意官方 API，立即得到中文作用、精确签名、参数解释、核心关系式、调用示例、应用场景与输入输出实验。数值算子展示实际计算；对象、硬件、分布式与编译接口展示具体步骤、返回值和状态变化。</p></div><div className="docs-atlas__stats"><div><strong>{entries.length.toLocaleString("zh-CN")}</strong><span>深度实验</span></div><div><strong>{groupCounts.length}</strong><span>学习模块</span></div><div><strong>100%</strong><span>API 覆盖</span></div></div></div>
+    <div className="docs-atlas__intro"><div><p className="eyebrow">PYTORCH 2.13 · API LOOKUP &amp; VISUAL LAB</p><h2>9,066 个接口，按需查询与实验</h2><p>每个条目都提供中文索引、官方链接与学习卡片；高频数值算子展示教学模拟计算，对象、硬件、分布式与编译接口展示处理步骤和状态示意。精确行为请以真实 PyTorch 运行时和官方文档为准。</p></div><div className="docs-atlas__stats"><div><strong>{entries.length.toLocaleString("zh-CN")}</strong><span>官方索引</span></div><div><strong>{groupCounts.length}</strong><span>学习模块</span></div><div><strong>15</strong><span>重点实验</span></div></div></div>
     <div className="docs-kind-tabs" role="tablist" aria-label="按接口种类浏览">{(["函数","类","方法","其他"] as ApiKind[]).map(name=><button role="tab" aria-selected={kind===name} className={kind===name?"active":""} key={name} onClick={()=>applyKind(name)}><span>{name}</span><b>{kindCounts[name].toLocaleString("zh-CN")}</b></button>)}</div>
-    <div className="docs-toolbar"><label className="docs-search"><span>⌕</span><input value={query} onChange={(e)=>{setQuery(e.target.value);setPage(0);}} placeholder={`在${kind}中搜索 Conv2d、backward…`} aria-label={`搜索 PyTorch ${kind}`} /><kbd>/</kbd></label><span className="docs-toolbar__path">{kind} › {group} › {subcategory}</span></div>
+    <div className="docs-toolbar"><label className="docs-search"><span>⌕</span><input ref={searchRef} value={query} onChange={(e)=>{setQuery(e.target.value);setPage(0);}} placeholder={`在${kind}中搜索 Conv2d、backward…`} aria-label={`搜索 PyTorch ${kind}`} /><kbd>/</kbd></label><span className="docs-toolbar__path">{kind} › {group} › {subcategory}</span></div>
     <nav className="docs-level-one" aria-label="一级模块"><strong>一级模块</strong><div><button className={group==="全部模块"?"active":""} onClick={()=>applyGroup("全部模块")}>全部 <b>{kindCounts[kind]}</b></button>{groupCountsByKind.map(([name,count])=><button key={name} className={group===name?"active":""} onClick={()=>applyGroup(name)}>{name} <b>{count}</b></button>)}</div></nav>
     <nav className="docs-level-two" aria-label="二级细分类"><div className="docs-level-two__label"><strong>二级分类</strong><span>仅显示当前一级模块的分类</span></div><div className="docs-level-two__tabs" role="tablist"><button role="tab" aria-selected={subcategory==="全部细分类"&&!showComparisonDirectory} className={subcategory==="全部细分类"&&!showComparisonDirectory?"active":""} onClick={()=>{setSubcategory("全部细分类");setShowComparisonDirectory(false);setPage(0);}}>全部 <b>{subcategoryCounts.reduce((sum,item)=>sum+item[1],0)}</b></button>{subcategoryCounts.map(([name,count])=><button role="tab" aria-selected={subcategory===name&&!showComparisonDirectory} key={name} className={subcategory===name&&!showComparisonDirectory?"active":""} onClick={()=>{setSubcategory(name);setShowComparisonDirectory(false);setPage(0);}}>{name} <b>{count}</b></button>)}<button role="tab" aria-selected={showComparisonDirectory} className={`comparison-index-link ${showComparisonDirectory?"active":""}`} onClick={()=>setShowComparisonDirectory(true)}>相似方法对比表 <b>{comparisonCatalog.length}</b></button></div></nav>
     {showComparisonDirectory?<ComparisonDirectory selected={selected} onClose={()=>setShowComparisonDirectory(false)} onOpen={(entry,tab)=>choose(entry,true,tab)}/>:<div className="docs-layout">
