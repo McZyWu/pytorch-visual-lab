@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import BeginnerStart from "./beginner-start";
 import FullApiBrowser from "./full-api-browser";
 
 type Category = "张量基础" | "形状变换" | "数学运算" | "神经网络" | "损失函数";
@@ -375,12 +376,14 @@ function Matrix({ value, tone = "input" }: { value: unknown; tone?: "input" | "o
 }
 
 export default function Home() {
-  const [selectedId, setSelectedId] = useState("matmul");
+  const [selectedId, setSelectedId] = useState("tensor");
   const [category, setCategory] = useState<(typeof categories)[number]>("全部");
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<"解析" | "参数" | "代码">("解析");
-  const initialLesson = lessons.find((item) => item.id === "matmul") ?? lessons[0];
+  const initialLesson = lessons.find((item) => item.id === "tensor") ?? lessons[0];
   const [completed, setCompleted] = useState<string[]>([]);
+  const [completedHydrated, setCompletedHydrated] = useState(false);
+  const [justCompletedId, setJustCompletedId] = useState<string | null>(null);
   const [inputText, setInputText] = useState(initialLesson.input);
   const [secondaryText, setSecondaryText] = useState(initialLesson.secondary ?? "");
   const [axis, setAxis] = useState(initialLesson.axis ?? 0);
@@ -389,10 +392,40 @@ export default function Home() {
   const [copied, setCopied] = useState(false);
 
   const lesson = lessons.find((item) => item.id === selectedId) ?? lessons[0];
+  const lessonIndex = Math.max(lessons.findIndex((item) => item.id === lesson.id), 0);
+  const previousLesson = lessons[lessonIndex - 1];
+  const nextLesson = lessons[lessonIndex + 1];
   const filtered = useMemo(() => lessons.filter((item) =>
     (category === "全部" || item.category === category) &&
     `${item.name}${item.shortName}${item.summary}`.toLowerCase().includes(query.toLowerCase())
   ), [category, query]);
+
+  useEffect(() => {
+    let restored: string[] = [];
+    try {
+      const saved = JSON.parse(localStorage.getItem("torchscope:completed-lessons") ?? "[]");
+      if (Array.isArray(saved)) {
+        const lessonIds = new Set(lessons.map((item) => item.id));
+        restored = saved.filter((id): id is string => typeof id === "string" && lessonIds.has(id));
+      }
+    } catch {
+      // Ignore missing, blocked, or malformed local progress and start from an empty list.
+    }
+    const restoreTimer = window.setTimeout(() => {
+      setCompleted(restored);
+      setCompletedHydrated(true);
+    }, 0);
+    return () => window.clearTimeout(restoreTimer);
+  }, []);
+
+  useEffect(() => {
+    if (!completedHydrated) return;
+    try {
+      localStorage.setItem("torchscope:completed-lessons", JSON.stringify(completed));
+    } catch {
+      // Learning remains usable when browser storage is unavailable.
+    }
+  }, [completed, completedHydrated]);
 
   function execute(current = lesson, a = inputText, b = secondaryText, d = axis) {
     try { setResult(runLesson(current, a, b, d)); setError(""); }
@@ -402,8 +435,15 @@ export default function Home() {
   function selectLesson(id: string) {
     const next = lessons.find((item) => item.id === id);
     if (!next) return;
-    setSelectedId(id); setInputText(next.input); setSecondaryText(next.secondary ?? ""); setAxis(next.axis ?? 0); setTab("解析"); setCopied(false); setError("");
+    if (category !== "全部" && next.category !== category) setCategory("全部");
+    setSelectedId(id); setInputText(next.input); setSecondaryText(next.secondary ?? ""); setAxis(next.axis ?? 0); setTab("解析"); setCopied(false); setError(""); setJustCompletedId(null);
     setResult(runLesson(next, next.input, next.secondary ?? "", next.axis ?? 0));
+  }
+
+  function toggleCompleted() {
+    const wasCompleted = completed.includes(lesson.id);
+    setCompleted((old) => wasCompleted ? old.filter((id) => id !== lesson.id) : [...old, lesson.id]);
+    setJustCompletedId(wasCompleted ? null : lesson.id);
   }
 
   let parsedInput: unknown = [];
@@ -425,8 +465,9 @@ export default function Home() {
       <section className="hero" id="top">
         <div>
           <p className="eyebrow">PYTORCH · INTERACTIVE ATLAS</p>
-          <h1>不漏掉任何 API，<em>也不止于目录。</em></h1>
-          <p>全量同步 PyTorch 2.13 官方文档接口；每一个 API 都有中文公式、变量解析、场景 Example 和输入输出实验。</p>
+          <h1>从第一个 Tensor 开始，<em>看懂 PyTorch 每一步。</em></h1>
+          <p>先用 15 节交互课掌握常用概念，再按需要查阅完整 API；每课都有中文解析、示例和输入输出实验。</p>
+          <a className="hero__start" href="#beginner-start">从第 1 课开始 · 约 10 分钟</a>
         </div>
         <div className="hero__demo" aria-label="张量变换示意">
           <div><small>输入 A · [2, 2]</small><Matrix value={[[1, 2], [3, 4]]} /></div>
@@ -437,7 +478,9 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="coverage-banner" aria-label="接口覆盖说明"><b>9,066</b><span>个官方 API 全部可进入深度实验</span><i>中文解析</i><i>公式变量</i><i>场景 Example</i><i>实际计算输出</i></section>
+      <section className="coverage-banner" aria-label="接口覆盖说明"><b>9,066</b><span>个官方 API 中文索引，重点算子可视实验</span><i>官方索引</i><i>中文学习卡</i><i>高频算子实验</i><i>状态示意</i></section>
+
+      <BeginnerStart />
 
       <section className="category-strip" aria-label="深度课程分类">
         {categories.map((item) => <button key={item} className={category === item ? "selected" : ""} onClick={() => setCategory(item)}>{item}{item !== "全部" && <sup>{lessons.filter((l) => l.category === item).length}</sup>}</button>)}
@@ -461,7 +504,12 @@ export default function Home() {
 
         <article className="lesson">
           <div className="lesson__meta"><span>{lesson.category}</span><span>·</span><span>{lesson.level}</span></div>
-          <div className="lesson__title-row"><div><h2>{lesson.name}</h2><p>{lesson.summary}</p></div><button className={completed.includes(lesson.id) ? "mastered" : ""} onClick={() => setCompleted((old) => old.includes(lesson.id) ? old.filter((id) => id !== lesson.id) : [...old, lesson.id])}>{completed.includes(lesson.id) ? "✓ 已掌握" : "标记掌握"}</button></div>
+          <nav className="lesson-nav" aria-label="课程顺序导航">
+            <button disabled={!previousLesson} onClick={() => previousLesson && selectLesson(previousLesson.id)}>← 上一课</button>
+            <span>第 {lessonIndex + 1} / {lessons.length} 课</span>
+            <button disabled={!nextLesson} onClick={() => nextLesson && selectLesson(nextLesson.id)}>下一课 →</button>
+          </nav>
+          <div className="lesson__title-row"><div><h2>{lesson.name}</h2><p>{lesson.summary}</p></div><div className="lesson__mastery"><button className={completed.includes(lesson.id) ? "mastered" : ""} onClick={toggleCompleted}>{completed.includes(lesson.id) ? "✓ 已掌握" : "标记掌握"}</button>{justCompletedId === lesson.id && nextLesson && <span className="lesson__next-tip" role="status">建议继续下一课</span>}</div></div>
           <div className="syntax"><small>调用方法</small><code>{lesson.syntax}</code><button onClick={async () => { await navigator.clipboard?.writeText(lesson.syntax); setCopied(true); setTimeout(() => setCopied(false), 1200); }}>{copied ? "已复制" : "复制"}</button></div>
           <div className="tabs" role="tablist" aria-label="课程内容">
             {(["解析", "参数", "代码"] as const).map((item) => <button key={item} role="tab" aria-selected={tab === item} onClick={() => setTab(item)}>{item}</button>)}
@@ -479,7 +527,7 @@ export default function Home() {
 
         <aside className="lab" id="lab">
           <div className="lab__head"><div><small>LIVE TENSOR LAB</small><h2>张量实验台</h2></div><span className="live"><i /> 即时</span></div>
-          <p className="lab__hint">输入标准 JSON 数组，修改后点击运行。</p>
+          <p className="lab__hint">输入使用 JSON；这里是教学模拟，不是真实 PyTorch 运行时。修改后点击运行。</p>
           <label><span>输入 Tensor A <code>{shapeLabel(parsedInput)}</code></span><textarea value={inputText} onChange={(e) => setInputText(e.target.value)} spellCheck={false} /></label>
           {lesson.secondary !== undefined && <label><span>{lesson.id === "reshape" ? "目标 shape" : lesson.id === "linear" ? "权重 W" : lesson.id === "mse" || lesson.id === "crossentropy" ? "目标 y" : "输入 Tensor B"}</span><textarea value={secondaryText} onChange={(e) => setSecondaryText(e.target.value)} spellCheck={false} /></label>}
           {["unsqueeze", "cat", "mean", "argmax", "softmax"].includes(lesson.id) && <label><span>维度 dim <code>{axis}</code></span><input type="range" min={lesson.id === "softmax" ? -1 : 0} max="1" step="1" value={axis} onChange={(e) => setAxis(Number(e.target.value))} /></label>}
