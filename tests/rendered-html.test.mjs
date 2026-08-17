@@ -110,3 +110,29 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(readme, /## 教学模拟边界/);
   assert.doesNotMatch(page, /SkeletonPreview|codex-preview/);
 });
+
+test("keeps exactly 100 curated function guides complete and connected to the API index", async () => {
+  const [source, indexSource, browser] = await Promise.all([
+    readFile(new URL("../app/function-guides.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api-index.generated.json", import.meta.url), "utf8"),
+    readFile(new URL("../app/full-api-browser.tsx", import.meta.url), "utf8"),
+  ]);
+  const indexNames = new Set(JSON.parse(indexSource).map((entry) => entry.name));
+  const guideLines = source.split(/\r?\n/).filter((line) => /^\s*guide\("torch\./.test(line));
+  const guideNames = guideLines.map((line) => line.match(/guide\("([^"]+)"/)?.[1]);
+
+  assert.equal(guideNames.length, 100, "the curated audit must cover exactly 100 functions");
+  assert.equal(new Set(guideNames).size, 100, "every curated function must be unique");
+  assert.deepEqual(guideNames.filter((name) => !indexNames.has(name)), [], "every curated function must exist in the generated API index");
+  for (const line of guideLines) {
+    assert.ok(line.length > 180, `guide is too vague: ${line.slice(0, 60)}`);
+    assert.ok((line.match(/"/g) ?? []).length >= 20, `guide is missing a readability field: ${line.slice(0, 60)}`);
+  }
+
+  assert.match(browser, /CURATED_FUNCTION_GUIDE_COUNT/);
+  assert.match(browser, /curatedFunctionGuideOf\(selected\.name\)/);
+  assert.match(browser, /适合什么时候用/);
+  assert.match(browser, /什么时候先别用/);
+  assert.match(browser, /容易混淆的函数/);
+  assert.match(browser, /人工精读/);
+});

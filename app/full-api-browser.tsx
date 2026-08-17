@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import apiIndex from "./api-index.generated.json";
+import { CURATED_FUNCTION_GUIDE_COUNT, curatedFunctionGuideOf } from "./function-guides";
 
 type ApiEntry = {
   name: string; leaf: string; type: string; typeLabel: string; group: string;
@@ -69,7 +70,24 @@ const foreachUnaryRules: Record<string,{latex:string;label:string;example:(x:num
 
 function foreachOperation(entry:ApiEntry){const raw=entry.leaf.toLowerCase(),base=raw.replace(/^_foreach_/,"").replace(/_$/,"");return {base,inPlace:raw.endsWith("_"),rule:foreachUnaryRules[base]};}
 
+function curatedCallOf(entry: ApiEntry) {
+  const curated = curatedFunctionGuideOf(entry.name);
+  if (curated?.call) return curated.call;
+  if (entry.type === "method") return `先有 Tensor x，再调用 x.${entry.leaf}(...)。`;
+  if (entry.type === "class") return `先构造 ${entry.name}(...)，再把它作为上下文、装饰器或对象使用。`;
+  return `直接调用 ${entry.name}(...)。`;
+}
+
 function operationGuideOf(entry:ApiEntry):OperationGuide {
+  const curated = curatedFunctionGuideOf(entry.name);
+  if (curated) return {
+    title: curated.purpose,
+    what: `${curated.purpose}。${curated.input}`,
+    steps: [`准备输入：${curated.input}`, curatedCallOf(entry), `读取结果：${curated.output}`],
+    returns: `${curated.output} ${curated.shape}`,
+    sideEffect: curated.sideEffect,
+    example: curated.example,
+  };
   const family=familyOf(entry), n=cleanLeaf(entry);
   if(family==="foreach"){
     const {base,inPlace,rule}=foreachOperation(entry),label=rule?.label??`执行 torch.${base}`;
@@ -288,6 +306,16 @@ function simulationTierOf(entry: ApiEntry): SimulationTier {
 }
 
 function readabilityOf(entry: ApiEntry): ReadabilityContract {
+  const curated = curatedFunctionGuideOf(entry.name);
+  if (curated) return {
+    level: curated.level,
+    call: curatedCallOf(entry),
+    input: curated.input,
+    output: curated.output,
+    shape: curated.shape,
+    autograd: curated.autograd,
+    pitfall: curated.pitfall,
+  };
   const family = familyOf(entry), n = cleanLeaf(entry), guide = operationGuideOf(entry);
   const availableQuery = family === "predicate" && n.includes("available");
   const advanced = new Set(["autograd", "convolution", "fft", "linalg", "optimizer", "distribution", "distributed", "compile", "export", "sparse", "quantization"]);
@@ -349,6 +377,8 @@ function exampleSpecOf(entry: ApiEntry): ExampleSpec {
   if (family === "binary") return { title: "可直接运行：观察 broadcasting", code: `import torch\n\nx = torch.tensor([[1], [2]])\nother = torch.tensor([10, 20])\nprint(torch.${n}(x, other))`, output: "输出 shape 为 (2, 2)；每个位置按该接口的二元规则计算。", runnable: ["add", "sub", "mul", "div", "pow"].includes(n) };
   if (family === "reduction" && ["sum", "mean", "max", "min"].includes(n)) return { title: "可直接运行：明确指定 dim", code: `import torch\n\nx = torch.tensor([[1.0, 2.0], [3.0, 4.0]])\nprint(torch.${n}(x, dim=0))`, output: n === "sum" ? "tensor([4., 6.])" : "输出沿 dim=0 汇总；max/min 还可能返回 indices。", runnable: true };
   if (family === "tensor_bridge" && n === "item") return { title: "可直接运行：Tensor 变 Python 标量", code: "import torch\n\nx = torch.tensor([3.5])\nvalue = x.item()\nprint(value, type(value))", output: "3.5 <class 'float'>", runnable: true };
+  const curated = curatedFunctionGuideOf(entry.name);
+  if (curated) return { title: "最小调用骨架：先看懂参数角色", code: `import torch\n\n${curated.example}`, output: `观察重点：${curated.output} ${curated.shape}`, runnable: false };
   const call = entry.type === "method" ? `result = tensor.${entry.leaf}(...)` : entry.type === "class" ? `obj = ${entry.name}(...)\nresult = obj(input)` : `result = ${entry.name}(...)`;
   return { title: "调用骨架：请按上方签名补齐参数", code: `import torch\n\n${call}\nprint(result)`, output: "返回类型、shape 与副作用见本页“30 秒读懂”和官方签名。", runnable: false };
 }
@@ -372,6 +402,8 @@ function conceptOf(entry: ApiEntry) {
 }
 
 function scenarioOf(entry: ApiEntry) {
+  const curated = curatedFunctionGuideOf(entry.name);
+  if (curated) return curated.useWhen;
   if(familyOf(entry)==="foreach")return foreachOperation(entry).inPlace?"在优化器或批量参数更新中，一次原地处理多个 Tensor，减少逐张量发起运算的开销":"在优化器或批量张量处理中，一次对多个 Tensor 执行相同逐元素运算并获得新列表";
   const map: Record<string, string> = {
     "Tensor 方法": "在模型前向计算中直接处理一个已有张量",
@@ -950,10 +982,10 @@ export default function FullApiBrowser() {
   const kindCounts=useMemo(()=>Object.fromEntries((["函数","类","方法","其他"] as ApiKind[]).map(name=>[name,entries.filter(entry=>kindOf(entry)===name).length])) as Record<ApiKind,number>,[]);
   const groupCountsByKind=useMemo(()=>Object.entries(entries.filter(entry=>kindOf(entry)===kind).reduce<Record<string,number>>((all,entry)=>(all[entry.group]=(all[entry.group]??0)+1,all),{})).sort((a,b)=>b[1]-a[1]),[kind]);
   const subcategoryCounts=useMemo(()=>{const scope=entries.filter(entry=>kindOf(entry)===kind&&(group==="全部模块"||entry.group===group));const counts=new Map<string,number>();scope.forEach(entry=>{const name=subcategoryOf(entry);counts.set(name,(counts.get(name)??0)+1);});return [...counts.entries()].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0],"zh-CN"));},[group,kind]);
-  const filtered = useMemo(() => { const keyword=query.trim().toLowerCase(); const matches=entries.filter((entry)=>kindOf(entry)===kind&&(group==="全部模块"||entry.group===group)&&(subcategory==="全部细分类"||subcategoryOf(entry)===subcategory)&&(!keyword||`${entry.name} ${entry.summary} ${entry.typeLabel} ${entry.group} ${subcategoryOf(entry)}`.toLowerCase().includes(keyword))); return keyword?[...matches].sort((a,b)=>searchRank(a,keyword)-searchRank(b,keyword)||a.name.localeCompare(b.name)):matches; }, [query,group,subcategory,kind]);
+  const filtered = useMemo(() => { const keyword=query.trim().toLowerCase(); const matches=entries.filter((entry)=>{const curated=curatedFunctionGuideOf(entry.name);const searchable=`${entry.name} ${entry.summary} ${entry.typeLabel} ${entry.group} ${subcategoryOf(entry)} ${curated?.purpose??""} ${curated?.input??""} ${curated?.output??""} ${curated?.shape??""} ${curated?.pitfall??""} ${curated?.useWhen??""} ${curated?.avoidWhen??""} ${curated?.related.join(" ")??""}`.toLowerCase();return kindOf(entry)===kind&&(group==="全部模块"||entry.group===group)&&(subcategory==="全部细分类"||subcategoryOf(entry)===subcategory)&&(!keyword||searchable.includes(keyword));}); return keyword?[...matches].sort((a,b)=>searchRank(a,keyword)-searchRank(b,keyword)||a.name.localeCompare(b.name)):matches; }, [query,group,subcategory,kind]);
   const pages=Math.max(1,Math.ceil(filtered.length/pageSize)), safePage=Math.min(page,pages-1), visible=filtered.slice(safePage*pageSize,(safePage+1)*pageSize);
   const selected=entries.find((item)=>item.name===selectedName)??visible[0]??entries[0];
-  const contract=readabilityOf(selected), tier=simulationTierOf(selected), example=exampleSpecOf(selected);
+  const contract=readabilityOf(selected), tier=simulationTierOf(selected), example=exampleSpecOf(selected), curated=curatedFunctionGuideOf(selected.name);
 
   useEffect(() => { let active=true; fetch(`/api/docs?name=${encodeURIComponent(selected.name)}&url=${encodeURIComponent(selected.url)}`).then((r)=>r.json()).then((data)=>{if(active){setRemote(data);setDocLoading(false);}}).catch(()=>{if(active){setRemote({error:"官方详情暂时无法读取"});setDocLoading(false);}}); return()=>{active=false;}; }, [selected.name,selected.url]);
   useEffect(()=>{const timer=window.setTimeout(()=>{const requested=new URLSearchParams(window.location.search).get("api"),entry=entries.find(item=>item.name===requested);if(entry){const next=defaultSpec(entry);setSelectedName(entry.name);setKind(kindOf(entry));setGroup(entry.group);setSubcategory(subcategoryOf(entry));setSpec(next);setSim(simulate(entry,next));}},0);return()=>window.clearTimeout(timer);},[]);
@@ -988,13 +1020,13 @@ export default function FullApiBrowser() {
   }
 
   return <section className="docs-atlas" id="all-apis">
-    <div className="docs-atlas__intro"><div><p className="eyebrow">PYTORCH 2.13 · API LOOKUP &amp; VISUAL LAB</p><h2>9,066 个接口，按需查询与实验</h2><p>每个条目都提供中文索引、官方链接与学习卡片；高频数值算子展示教学模拟计算，对象、硬件、分布式与编译接口展示处理步骤和状态示意。精确行为请以真实 PyTorch 运行时和官方文档为准。</p></div><div className="docs-atlas__stats"><div><strong>{entries.length.toLocaleString("zh-CN")}</strong><span>官方索引</span></div><div><strong>{groupCounts.length}</strong><span>学习模块</span></div><div><strong>15</strong><span>重点实验</span></div></div></div>
+    <div className="docs-atlas__intro"><div><p className="eyebrow">PYTORCH 2.13 · API LOOKUP &amp; VISUAL LAB</p><h2>9,066 个接口，按需查询与实验</h2><p>每个条目都提供中文索引、官方链接与学习卡片；其中 100 个高频函数经过逐项精读，明确输入、输出、shape、梯度、副作用、适用场景和替代项。其余接口使用函数族的处理步骤和状态示意；精确行为仍以真实 PyTorch 运行时和官方文档为准。</p></div><div className="docs-atlas__stats"><div><strong>{entries.length.toLocaleString("zh-CN")}</strong><span>官方索引</span></div><div><strong>{groupCounts.length}</strong><span>学习模块</span></div><div><strong>{CURATED_FUNCTION_GUIDE_COUNT}</strong><span>函数精读</span></div></div></div>
     <div className="docs-kind-tabs" role="tablist" aria-label="按接口种类浏览">{(["函数","类","方法","其他"] as ApiKind[]).map(name=><button role="tab" aria-selected={kind===name} className={kind===name?"active":""} key={name} onClick={()=>applyKind(name)}><span>{name}</span><b>{kindCounts[name].toLocaleString("zh-CN")}</b></button>)}</div>
     <div className="docs-toolbar"><label className="docs-search"><span>⌕</span><input ref={searchRef} value={query} onChange={(e)=>{setQuery(e.target.value);setPage(0);}} placeholder={`在${kind}中搜索 Conv2d、backward…`} aria-label={`搜索 PyTorch ${kind}`} /><kbd>/</kbd></label><span className="docs-toolbar__path">{kind} › {group} › {subcategory}</span></div>
     <nav className="docs-level-one" aria-label="一级模块"><strong>一级模块</strong><div><button className={group==="全部模块"?"active":""} onClick={()=>applyGroup("全部模块")}>全部 <b>{kindCounts[kind]}</b></button>{groupCountsByKind.map(([name,count])=><button key={name} className={group===name?"active":""} onClick={()=>applyGroup(name)}>{name} <b>{count}</b></button>)}</div></nav>
     <nav className="docs-level-two" aria-label="二级细分类"><div className="docs-level-two__label"><strong>二级分类</strong><span>仅显示当前一级模块的分类</span></div><div className="docs-level-two__tabs" role="tablist"><button role="tab" aria-selected={subcategory==="全部细分类"&&!showComparisonDirectory} className={subcategory==="全部细分类"&&!showComparisonDirectory?"active":""} onClick={()=>{setSubcategory("全部细分类");setShowComparisonDirectory(false);setPage(0);}}>全部 <b>{subcategoryCounts.reduce((sum,item)=>sum+item[1],0)}</b></button>{subcategoryCounts.map(([name,count])=><button role="tab" aria-selected={subcategory===name&&!showComparisonDirectory} key={name} className={subcategory===name&&!showComparisonDirectory?"active":""} onClick={()=>{setSubcategory(name);setShowComparisonDirectory(false);setPage(0);}}>{name} <b>{count}</b></button>)}<button role="tab" aria-selected={showComparisonDirectory} className={`comparison-index-link ${showComparisonDirectory?"active":""}`} onClick={()=>setShowComparisonDirectory(true)}>相似方法对比表 <b>{comparisonCatalog.length}</b></button></div></nav>
     {showComparisonDirectory?<ComparisonDirectory selected={selected} onClose={()=>setShowComparisonDirectory(false)} onOpen={(entry,tab)=>choose(entry,true,tab)}/>:<div className="docs-layout">
-      <div className="docs-results"><div className="docs-results__head"><p>找到 <b>{filtered.length.toLocaleString("zh-CN")}</b> 个{kind} <em>{group} › {subcategory}</em></p><span>第 {safePage+1} / {pages} 页</span></div><div className="api-table" role="table"><div className="api-table__header"><span>接口 / 细分类</span><span>类型</span><span>具体做什么</span></div>{visible.map((entry)=><button key={entry.name} className={selected.name===entry.name?"selected":""} onClick={()=>choose(entry)}><div><code>{entry.name}</code><small>{subcategoryOf(entry)}</small></div><span>{entry.typeLabel}</span><p>{operationGuideOf(entry).title}</p></button>)}{!visible.length&&<div className="docs-empty">没有匹配的接口，换个关键词试试。</div>}</div><div className="pagination"><button disabled={safePage===0} onClick={()=>setPage(Math.max(0,safePage-1))}>← 上一页</button><span>{filtered.length?safePage*pageSize+1:0}–{Math.min((safePage+1)*pageSize,filtered.length)} / {filtered.length}</span><button disabled={safePage>=pages-1} onClick={()=>setPage(Math.min(pages-1,safePage+1))}>下一页 →</button></div></div>
+      <div className="docs-results"><div className="docs-results__head"><p>找到 <b>{filtered.length.toLocaleString("zh-CN")}</b> 个{kind} <em>{group} › {subcategory}</em></p><span>第 {safePage+1} / {pages} 页</span></div><div className="api-table" role="table"><div className="api-table__header"><span>接口 / 细分类</span><span>类型</span><span>具体做什么</span></div>{visible.map((entry)=><button key={entry.name} className={selected.name===entry.name?"selected":""} onClick={()=>choose(entry)}><div><code>{entry.name}</code><small>{subcategoryOf(entry)}{curatedFunctionGuideOf(entry.name)&&<em> · 人工精读</em>}</small></div><span>{entry.typeLabel}</span><p>{operationGuideOf(entry).title}</p></button>)}{!visible.length&&<div className="docs-empty">没有匹配的接口，换个关键词试试。</div>}</div><div className="pagination"><button disabled={safePage===0} onClick={()=>setPage(Math.max(0,safePage-1))}>← 上一页</button><span>{filtered.length?safePage*pageSize+1:0}–{Math.min((safePage+1)*pageSize,filtered.length)} / {filtered.length}</span><button disabled={safePage>=pages-1} onClick={()=>setPage(Math.min(pages-1,safePage+1))}>下一页 →</button></div></div>
       <aside className="api-inspector"><div className="api-inspector__top"><span>{selected.group}<em> › {subcategoryOf(selected)}</em></span><i>{selected.typeLabel}</i></div><h3>{selected.leaf}</h3><code className="api-inspector__path">{selected.name}</code><section><small>它具体做什么</small><OperationGuidePanel entry={selected} compact /></section><section><small>数学定义 / 处理规则</small><FormulaPanel entry={selected} compact /></section><section><small>应用场景</small><p>{scenarioOf(selected)}</p></section><button className="official-link" type="button" onClick={()=>choose(selected,false,"overview")}>进入本接口标签页 ↓</button></aside>
     </div>}
 
@@ -1013,6 +1045,12 @@ export default function FullApiBrowser() {
         <div className="api-quick-read__pitfall"><b>⚠ 最容易踩的坑</b><p>{contract.pitfall}</p></div>
         <div className="api-quick-read__check"><b>读完自测：</b><span>我能说出输入吗？</span><span>我能预测输出类型和 shape 吗？</span><span>我知道它会不会改原数据或计算图吗？</span></div>
       </section>
+      {curated&&<section className="curated-function-guide" aria-label="人工精读补充说明">
+        <div><b>适合什么时候用</b><p>{curated.useWhen}</p></div>
+        <div><b>什么时候先别用</b><p>{curated.avoidWhen}</p></div>
+        <div><b>最小调用骨架</b><code>{curated.example}</code></div>
+        <div><b>容易混淆的函数</b><p>{curated.related.length?curated.related.join(" · "):"没有必须先对比的近邻函数。"}</p></div>
+      </section>}
       <div className="deep-lab-tabs" role="tablist" aria-label="接口详情标签页">{([{id:"overview",label:"介绍与公式"},{id:"usage",label:"调用与变量"},{id:"example",label:"Example 与输入"},{id:"result",label:"计算过程与输出"},...(comparisonOf(selected)?[{id:"compare",label:"相似方法区别"}]:[])] as Array<{id:DetailTab;label:string}>).map(tab=><button role="tab" aria-selected={detailTab===tab.id} className={detailTab===tab.id?"active":""} key={tab.id} onClick={()=>setDetailTab(tab.id)}>{tab.label}</button>)}</div>
       <div className="deep-lab__grid">
         {detailTab==="overview"&&<section className="deep-card deep-card--wide"><small>① 它做什么、怎么算、返回什么</small><OperationGuidePanel entry={selected}/><div className="deep-formula"><span>数学定义 / 明确处理规则</span><FormulaPanel entry={selected} /></div><div className="deep-overview-scenario"><b>什么时候使用</b><p>{scenarioOf(selected)}</p></div></section>}
