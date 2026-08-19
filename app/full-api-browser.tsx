@@ -4,14 +4,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import apiIndex from "./api-index.generated.json";
+import { CURATED_FUNCTION_GUIDE_COUNT, curatedFunctionGuideOf } from "./function-guides";
 
 type ApiEntry = {
   name: string; leaf: string; type: string; typeLabel: string; group: string;
   summary: string; display: string; priority: number; url: string;
 };
 type RemoteDoc = { signature?: string; parameters?: string[]; summary?: string; source?: string; error?: string };
-type Variable = { name: string; meaning: string; sample: string };
+type Variable = { name: string; meaning: string; sample: string; required?: boolean; raw?: string };
 type Simulation = { mode: "数值计算" | "梯度计算" | "张量变换" | "对象与状态"; title: string; value: unknown; trace: string[] };
+type SimulationTier = { label: "数值教学模拟" | "规则示意" | "流程 / 状态示意"; note: string; numeric: boolean };
+type ReadabilityContract = { level: "入门" | "常用" | "进阶"; call: string; input: string; output: string; shape: string; autograd: string; pitfall: string };
+type ExampleSpec = { title: string; code: string; output: string; runnable: boolean };
 type TensorItem = { key: string; label: string; value: unknown };
 type FormulaSpec = { latex: string; spoken: string; explanation: string; symbols: Array<{ symbol: string; meaning: string }> };
 type OperationGuide = { title: string; what: string; steps: string[]; returns: string; sideEffect: string; example: string };
@@ -66,13 +70,31 @@ const foreachUnaryRules: Record<string,{latex:string;label:string;example:(x:num
 
 function foreachOperation(entry:ApiEntry){const raw=entry.leaf.toLowerCase(),base=raw.replace(/^_foreach_/,"").replace(/_$/,"");return {base,inPlace:raw.endsWith("_"),rule:foreachUnaryRules[base]};}
 
+function curatedCallOf(entry: ApiEntry) {
+  const curated = curatedFunctionGuideOf(entry.name);
+  if (curated?.call) return curated.call;
+  if (entry.type === "method") return `先有 Tensor x，再调用 x.${entry.leaf}(...)。`;
+  if (entry.type === "class") return `先构造 ${entry.name}(...)，再把它作为上下文、装饰器或对象使用。`;
+  return `直接调用 ${entry.name}(...)。`;
+}
+
 function operationGuideOf(entry:ApiEntry):OperationGuide {
+  const curated = curatedFunctionGuideOf(entry.name);
+  if (curated) return {
+    title: curated.purpose,
+    what: `${curated.purpose}。${curated.input}`,
+    steps: [`准备输入：${curated.input}`, curatedCallOf(entry), `读取结果：${curated.output}`],
+    returns: `${curated.output} ${curated.shape}`,
+    sideEffect: curated.sideEffect,
+    example: curated.example,
+  };
   const family=familyOf(entry), n=cleanLeaf(entry);
   if(family==="foreach"){
     const {base,inPlace,rule}=foreachOperation(entry),label=rule?.label??`执行 torch.${base}`;
     const calculated=rule?`[tensor([${roundDeep(rule.example(1.2))}, ${roundDeep(rule.example(-1.8))}]), tensor([[${roundDeep(rule.example(2))}, ${roundDeep(rule.example(2.3))}]])]`:"对应运算结果";
     return {title:`对张量列表逐个执行${label}`,what:`输入不是一个 Tensor，而是 List[Tensor]。函数保留列表中每个张量的 shape，并对每个张量里的每个元素执行同一个 ${base} 运算；列表中的张量彼此独立，不会互相广播。`,steps:[`读取列表中的第 k 个张量 X^(k)` ,`遍历该张量的每个位置 i：取 x=X^(k)_i，${rule?rule.label:`计算 torch.${base}(x)`}`,inPlace?`把结果写回同一位置 X^(k)_i，然后处理下一个张量`:`把结果写入新张量的同一位置 Y^(k)_i，然后处理下一个张量`],returns:inPlace?"原地版本以下划线结尾，返回 None；计算结果保存在已被修改的输入张量中。":"返回新的 List[Tensor]；列表长度与输入相同，第 k 个输出 shape 与第 k 个输入相同。",sideEffect:inPlace?"有副作用：输入列表本身仍指向原张量，但这些张量的元素已经被覆盖。":"无原地副作用：输入张量保持不变，输出张量使用新的结果存储。",example:rule?`输入 tensors=[tensor([1.2,-1.8]), tensor([[2.0,2.3]])]；${inPlace?`调用后返回 None，tensors 变为 ${calculated}`:`返回 ${calculated}，tensors 不变`}`:"每个输入张量分别调用对应的单张量运算。"};
   }
+  if(family==="creation"&&n.startsWith("empty"))return {title:`${entry.leaf}：分配未初始化张量`,what:"只确定 shape、dtype、device 与内存布局，不会把元素填成 0 或任何固定值。新张量中的数值来自尚未初始化的内存，读取前必须先写入。",steps:["解析目标 shape、dtype 与 device","分配足够的存储空间，但不写入确定数值","由后续计算完整覆盖张量内容后再读取"],returns:"返回指定 shape 的新 Tensor；元素值未定义，每次运行都可能不同。",sideEffect:"创建新存储；不会修改其他张量，但直接使用未初始化值会产生不可预测结果。",example:"x = torch.empty((2, 3))  # 只能先确认 x.shape；不要断言其中的数值"};
   const guides:Record<string,OperationGuide>={
     unary:{title:"逐元素计算一个明确的数学函数",what:"输出与输入 shape 相同；每个输出位置只依赖输入同一位置的值。",steps:["取输入位置 i 的数值 xᵢ",`代入 ${entry.leaf} 对应的具体运算`,`把结果写入输出同一位置 yᵢ`],returns:"返回与输入同 shape 的新张量。",sideEffect:n.endsWith("_")?"名称以下划线结尾时会覆盖原张量。":"默认不修改输入。",example:"例如 ceil([1.2,-1.8,2.0]) = [2,-1,2]。"},
     binary:{title:"广播对齐后逐元素做二元运算",what:"两个输入先按 broadcasting 从末维对齐，再在每个位置执行加、减、乘、除或幂。",steps:["从最后一维比较两个 shape","长度相等或其中一个为 1 时扩展到共同 shape","对每个对齐位置计算并写入输出"],returns:"返回广播后的共同 shape。",sideEffect:n.endsWith("_")?"原地版本会修改第一个输入。":"默认不修改输入。",example:"add([[1],[2]],[10,20]) → [[11,21],[12,22]]。"},
@@ -88,7 +110,7 @@ function operationGuideOf(entry:ApiEntry):OperationGuide {
     squeeze:{title:`${entry.leaf}：增加或删除长度为 1 的维度`,what:"只修改 shape 的维度描述，不改变元素数量、数值或线性顺序。",steps:["读取输入 shape","按 dim 插入 1，或验证并删除长度为 1 的维度","用新坐标解释同一批元素"],returns:"返回新 shape 的 view。",sideEffect:n.endsWith("_")?"原地版本修改 shape 元数据。":"不修改输入。",example:"unsqueeze shape (2,3) at dim=1 → (2,1,3)。"},
     combine:{title:`${entry.leaf}：沿指定维度拼接或新增维度堆叠`,what:"cat 要求非拼接维完全相同；stack 要求所有 shape 完全相同，并先新增一个维度。",steps:["验证各输入 shape 是否兼容","计算每个输入在输出中的坐标区间","按输入顺序复制元素到对应区间"],returns:"返回包含全部输入元素的新张量。",sideEffect:"不修改输入。",example:"cat([[1,2]],[[3,4]],dim=0) = [[1,2],[3,4]]。"},
     split:{title:`${entry.leaf}：沿 dim 把一个张量切成多个视图`,what:"按块大小、块数或索引边界划分指定维度；其他维度保持不变。",steps:["读取 dim 的长度","计算每个输出片段的起止索引","为每段建立切片结果"],returns:"返回 Tensor 元组或列表；最后一段可能更短。",sideEffect:"通常不修改输入，结果常与输入共享存储。",example:"chunk([1,2,3,4,5],2) → [1,2,3] 与 [4,5]。"},
-    sorting:{title:`${entry.leaf}：沿 dim 比较元素并确定排序位置`,what:"每条 dim 切片独立排序或选择前 k 项；其他坐标固定不变。",steps:["取出一条 dim 切片","比较元素并确定升降序或 Top-K 位置","写出数值，按接口同时写出原索引"],returns:"返回排序值，部分接口还返回 indices。",sideEffect:n.endsWith("_")?"原地版本覆盖输入顺序。":"不修改输入。",example:"topk([3,1,4,2],2) → values=[4,3], indices=[2,0]。"},
+    sorting:{title:`${entry.leaf}：沿 dim 比较元素并确定排序位置`,what:"每条 dim 切片独立排序或选择前 k 项；其他坐标固定不变。",steps:["取出一条 dim 切片","比较元素并确定升降序或 Top-K 位置","写出数值，按接口同时写出原索引"],returns:n.includes("topk")||n==="sort"?"返回 (values, indices) 命名元组；两个 Tensor shape 相同，indices 通常是 int64。":n.includes("argsort")?"返回排序位置 indices，通常是 int64 Tensor。":"按具体接口返回排序值、索引或二者。",sideEffect:n.endsWith("_")?"原地版本覆盖输入顺序。":"不修改输入。",example:"topk([3,1,4,2],2) → values=[4,3], indices=[2,0]。"},
     counting:{title:`${entry.leaf}：按数值相等关系分组并计数`,what:"扫描输入，把相同值归到同一组；根据接口输出唯一值、频数、逆索引或直方图区间计数。",steps:["展开或沿 dim 读取元素","比较/哈希元素并建立分组","按首次出现或排序规则输出组及统计量"],returns:"返回唯一值或计数相关张量，shape 由组数决定。",sideEffect:"不修改输入。",example:"unique([2,1,2,3,1]) → [1,2,3]。"},
     comparison:{title:`${entry.leaf}：广播后逐位置判断比较关系`,what:"两个输入先广播到共同 shape，再逐位置执行等于、大小或近似相等判断。",steps:["从末维对齐两个 shape","把长度 1 的维度扩展到共同长度","逐位置比较并写出 True/False"],returns:"通常返回 bool 张量；整体判断接口可返回单个 bool。",sideEffect:"不修改输入。",example:"gt([1,3],[2]) → [False,True]。"},
     selection:{title:`${entry.leaf}：按条件决定每个输出位置取哪个值`,what:"条件、input 与 other 先广播；条件为真取 input，否则取 other。",steps:["广播对齐条件与候选输入","读取位置 i 的布尔条件","从两个候选值中选择一个写入 Yᵢ"],returns:"返回广播后的共同 shape。",sideEffect:"不修改输入。",example:"where([True,False],[1,2],[10,20]) = [1,20]。"},
@@ -111,6 +133,14 @@ function operationGuideOf(entry:ApiEntry):OperationGuide {
     bce:{title:`${entry.leaf}：计算二分类目标的负对数似然`,what:"对目标 y∈{0,1}，同时计算正类项 −y·log(p) 与负类项 −(1−y)·log(1−p)；logits 版本会用数值稳定等价式。",steps:["取得概率 p 或从 logits 得到稳定概率表达","逐位置计算正类项与负类项之和","应用 weight/pos_weight 后按 reduction 汇总"],returns:"none 返回逐位置损失；mean/sum 返回归约结果。",sideEffect:"不修改输入。",example:"p=0.8、y=1 时损失=−log(0.8)≈0.22314。"},
     copy_state:{title:`${entry.leaf}：复制张量、建立视图或改变梯度关联`,what:"根据接口决定是否共享底层存储、是否复制元素，以及结果是否继续连接原计算图。",steps:["读取输入的存储、stride 与梯度状态","按 clone/view/detach 等规则建立结果","保留或切断 autograd 关系"],returns:"返回新张量对象；它可能共享存储，也可能拥有独立存储。",sideEffect:n.endsWith("_")?"原地版本修改当前张量的元数据或状态。":"通常不修改输入；共享视图的后续写入可能反映到同一存储。",example:"clone 独立复制数据；view 共享数据；detach 共享数据但结果不再追踪该计算图。"},
     state:{title:`${entry.leaf}：读取或修改运行时状态`,what:"这类接口处理开关、配置、上下文或对象属性，不对张量元素套用数学公式。",steps:["读取当前状态与调用参数","验证状态切换或属性访问是否合法","返回状态，或把新状态写入指定作用域"],returns:"查询接口返回值；设置接口通常返回 None、旧值或上下文管理器。",sideEffect:/set|enable|disable|clear|reset/.test(n)?"会改变后续调用读取到的状态。":"只读查询不修改状态。",example:`${entry.leaf}(...) 的效果作用于对应模块、线程上下文或进程状态。`},
+    grad_mode:{title:`${entry.leaf}：控制是否记录梯度`,what:"在指定代码作用域内开启或关闭 autograd 记录。它不改变已有 Tensor 的 requires_grad，但会影响作用域中新运算是否进入计算图。",steps:["保存进入作用域前的梯度模式","在当前线程切换梯度记录开关","离开作用域时恢复之前的模式"],returns:"通常返回上下文管理器或装饰器；被包裹函数仍返回自己的结果。",sideEffect:"临时改变当前线程的梯度记录模式；作用域结束后恢复。",example:"with torch.no_grad():\n    prediction = model(x)  # 推理时不保存反向图"},
+    tensor_bridge:{title:`${entry.leaf}：把 Tensor 转成 Python / NumPy 表示`,what:"从 Tensor 取出 Python 标量、列表或 NumPy 数组。不同接口对元素个数、CPU、梯度状态和共享存储有不同限制。",steps:["检查 Tensor 的元素数、device 与梯度状态","按 item/tolist/numpy 的规则转换表示","返回 Python 或 NumPy 对象"],returns:n==="item"?"返回一个 Python 数字；输入必须恰好只有一个元素。":n==="tolist"?"返回嵌套 Python list；必要时会先移动到 CPU。":"返回 NumPy ndarray；默认情况下可能与 CPU Tensor 共享存储。",sideEffect:"转换本身不修改数值；numpy 共享存储时，后续写入可能同时改变 Tensor 与 ndarray。",example:n==="item"?"torch.tensor([3.5]).item()  # 3.5":"x = torch.tensor([1, 2]); a = x.numpy()  # CPU Tensor 与 a 可能共享内存"},
+    module_state:{title:`${entry.leaf}：读取或恢复模块状态`,what:"state_dict 把参数和持久缓冲区整理成有名称的映射；load_state_dict 按名称与 shape 把这些值写回模块。",steps:["遍历模块树并生成完整参数名称","保存或匹配每个参数、缓冲区的 Tensor","返回映射，或报告 missing/unexpected keys"],returns:n.includes("load")?"返回缺失键与多余键等加载结果；strict=True 时不匹配会报错。":"返回按名称组织的浅拷贝字典，值引用模块参数和缓冲区。",sideEffect:n.includes("load")?"会把提供的状态写入模块参数和缓冲区。":"读取状态，不修改模块；返回字典中的 Tensor 仍关联当前状态。",example:"torch.save(model.state_dict(), 'model.pt')\nmodel.load_state_dict(torch.load('model.pt', weights_only=True))"},
+    distributed:{title:`${entry.leaf}：让多个进程交换或汇总数据`,what:"参与同一 process group 的 rank 必须按兼容顺序调用集合通信；每个 rank 提供 Tensor，通信后按接口得到汇总、广播或收集结果。",steps:["确认 process group、rank 与 Tensor shape/dtype 兼容","所有参与进程进入同一次通信操作","等待同步完成，或通过 Work 句柄等待异步操作"],returns:"同步调用常返回 None；async_op=True 时返回 Work 句柄。",sideEffect:/all_reduce|broadcast|reduce|scatter/.test(n)?"通常原地修改传入 Tensor；还可能同步或阻塞当前进程。":"会改变通信状态或返回跨进程数据。",example:"dist.all_reduce(x, op=dist.ReduceOp.SUM)  # 每个 rank 的 x 都变为总和"},
+    compile:{title:`${entry.leaf}：捕获并优化 Python / PyTorch 执行`,what:"编译器观察一次或多次调用，把可捕获的 Tensor 运算组成图并交给后端优化；遇到不支持的 Python 行为可能 graph break 或回退。",steps:["用示例调用捕获可编译区域","依据输入 shape、dtype 与 Python 条件建立 guards","后端生成优化代码并缓存给后续兼容输入"],returns:"返回优化后的可调用对象，或查询/配置编译状态。",sideEffect:"首次调用可能有明显编译开销；输入变化可能触发重新编译。",example:"optimized = torch.compile(model)\ny = optimized(x)  # 首次调用编译，后续兼容输入复用"},
+    export:{title:`${entry.leaf}：把模块和示例输入转换为可验证计算图`,what:"根据示例输入捕获 Tensor 计算，并把输入约束、图签名和参数一起保存为 ExportedProgram，供部署或进一步转换。",steps:["提供模块与代表性 args/kwargs","捕获运算并记录静态或动态 shape 约束","生成可检查、可变换的导出程序"],returns:"通常返回 ExportedProgram 或相关图对象。",sideEffect:"不训练模型；导出会分析执行路径，示例输入必须能覆盖目标行为。",example:"ep = torch.export.export(model, (example_x,))\nprint(ep.graph_module.graph)"},
+    sparse:{title:`${entry.leaf}：按稀疏存储规则执行运算`,what:"只保存非零值及其坐标/压缩索引。接口支持的稀疏布局、dtype、设备和梯度能力可能少于稠密 Tensor。",steps:["读取 COO/CSR 等稀疏索引与 values","按接口验证布局和维度兼容性","只遍历相关非零项并生成稀疏或稠密输出"],returns:"返回稀疏或稠密 Tensor，具体布局由接口决定。",sideEffect:n.endsWith("_")?"原地版本修改稀疏 Tensor 的 values 或结构。":"通常不修改输入。",example:"y = torch.sparse.mm(sparse_matrix, dense_matrix)"},
+    quantization:{title:`${entry.leaf}：用 scale 和 zero_point 表示低精度数值`,what:"把浮点值映射为整数存储，并保存反量化所需的 scale 与 zero_point；量化误差来自取整和截断。",steps:["读取浮点输入和量化参数","计算 q = round(x / scale) + zero_point","截断到量化 dtype 范围并保存参数"],returns:"返回量化 Tensor、观察器、配置或转换后的模块。",sideEffect:"转换模块时可能替换子模块；量化 Tensor 的数值表示与普通浮点 Tensor 不同。",example:"q = torch.quantize_per_tensor(x, scale=0.1, zero_point=10, dtype=torch.quint8)"},
     object:{title:`${entry.leaf}：创建或管理一个 PyTorch 对象`,what:"构造函数保存配置并初始化成员；对象方法读取这些成员与调用输入，完成模块、容器、数据集或运行时对象的职责。",steps:["解析构造或方法参数","创建/定位对象内部成员与资源","执行对象行为并返回结果或句柄"],returns:"构造时返回对象实例；方法按职责返回张量、迭代器、状态或 None。",sideEffect:"构造会创建对象状态；训练模块调用可能更新缓冲区，管理方法可能修改成员。",example:`obj=${entry.name}(...)；随后通过 obj(...) 或对象方法使用已保存配置。`},
     api_behavior:{title:`${entry.leaf}：执行该工具接口定义的具体行为`,what:`它属于“${subcategoryOf(entry)}”，处理 Python 对象、资源或运行时行为，而不是对每个张量元素计算同一个公式。`,steps:["解析调用参数与当前上下文","定位操作需要的对象或后端资源",`执行 ${entry.leaf} 对应行为并生成返回结果`],returns:"在“调用与变量”中按具体签名显示返回对象、句柄、状态或 None。",sideEffect:n.endsWith("_")?"下划线版本通常修改当前对象。":"配置、注册和 I/O 接口可能改变外部状态；查询接口不会。",example:`${entry.name}(...) 的实验会把返回值和发生的状态变化分别列出。`},
   };
@@ -172,6 +202,7 @@ function formulaSpecOf(entry: ApiEntry): FormulaSpec {
   if (family === "comparison") return {latex:String.raw`Y_i=\mathbf{1}\!\left[X_i\;\mathcal{R}\;B_i\right]`,spoken:"逐元素判断两个值是否满足指定比较关系。",explanation:"关系 R 可以是 =、≠、>、≥、< 或 ≤；结果是同形状的布尔张量。",symbols:[{symbol:"\mathcal R",meaning:"当前接口对应的比较关系"},{symbol:"\mathbf1[\cdot]",meaning:"条件成立返回 True，否则 False"},{symbol:"X_i,B_i",meaning:"广播后位置 i 的两个输入"}]};
   if (family === "selection") return {latex:String.raw`Y_i=\begin{cases}X_i,&C_i=\mathrm{True}\\B_i,&C_i=\mathrm{False}\end{cases}`,spoken:"条件为真选择 input，否则选择 other。",explanation:"condition、input 和 other 会先按 broadcasting 规则对齐。",symbols:[{symbol:"C_i",meaning:"位置 i 的布尔条件"},{symbol:"X_i,B_i",meaning:"两个候选输入"},{symbol:"Y_i",meaning:"选择后的输出"}]};
   if (["squeeze","combine","split","indexing","inspection"].includes(family)) return {latex:String.raw`Y_{\boldsymbol{i}}=X_{\phi(\boldsymbol{i})}`,spoken:"数值保持不变，由索引映射 φ 决定元素在输出中的位置。",explanation:"这类操作主要改变 shape、维度或索引组织；具体映射由 dim、shape、index 等参数决定。",symbols:[{symbol:"\boldsymbol{i}",meaning:"输出张量的多维索引"},{symbol:"\phi",meaning:"当前变形或索引操作定义的位置映射"},{symbol:"X,\,Y",meaning:"输入张量与输出张量"}]};
+  if (family === "creation" && n.startsWith("empty")) return {latex:"",spoken:"empty 只分配存储，不定义任何元素值。",explanation:"输出 shape、dtype 和 device 是确定的，但内容未初始化；必须先完整写入再读取，不能把实验中的某组数值当作 PyTorch 保证。",symbols:[]};
   if (family === "creation") return {latex:String.raw`Y_{i_1,\ldots,i_D}=c,\qquad \operatorname{shape}(Y)=(d_1,\ldots,d_D)`,spoken:"按照目标 shape 创建张量，并按接口规则写入元素。",explanation:"zeros、ones、full 分别令 c 为 0、1 或 fill_value；eye 只把主对角线置为 1。",symbols:[{symbol:"D",meaning:"张量维数"},{symbol:"d_1,\ldots,d_D",meaning:"各维长度"},{symbol:"c",meaning:"填充值"}]};
   if (family === "random" || family === "distribution") return {latex:String.raw`X_i\overset{\mathrm{i.i.d.}}{\sim}\mathcal{D}(\boldsymbol{\theta})`,spoken:"每个元素按照指定分布及其参数独立采样。",explanation:"设置随机种子可以复现实验；分布 D 和参数 θ 由当前随机接口决定。",symbols:[{symbol:"X_i",meaning:"第 i 个随机样本"},{symbol:"\mathcal D",meaning:"均匀、正态、伯努利等概率分布"},{symbol:"\boldsymbol\theta",meaning:"分布参数，如均值、标准差或概率"},{symbol:"\mathrm{i.i.d.}",meaning:"独立同分布"}]};
   return {latex:"",spoken:"该接口不是可用一个标量等式说明的数学运算。",explanation:"此处直接展示具体处理步骤、返回值与副作用，不用空泛的函数符号充当数学公式。",symbols:[]};
@@ -197,25 +228,168 @@ function OperationGuidePanel({entry,compact=false}:{entry:ApiEntry;compact?:bool
   return <div className={`operation-guide ${compact?"operation-guide--compact":""}`}><h5>{guide.title}</h5><p>{guide.what}</p>{!compact&&<><ol>{guide.steps.map((step,index)=><li key={step}><span>{index+1}</span><p>{step}</p></li>)}</ol><div className="operation-contract"><div><b>返回值</b><p>{guide.returns}</p></div><div><b>副作用</b><p>{guide.sideEffect}</p></div></div><div className="operation-example"><b>看得懂的例子</b><code>{guide.example}</code></div></>}</div>;
 }
 
+function parameterInfoOf(name: string) {
+  const key = name.toLowerCase();
+  const rules: Array<[RegExp, string, string]> = [
+    [/^(input|tensor|self|x|a)$/, "要被处理的输入 Tensor 或当前对象", "torch.tensor([[1, 2], [3, 4]])"],
+    [/^(other|b)$/, "第二个输入；是否允许广播取决于当前接口", "2 或另一个 Tensor"],
+    [/^(k)$/, "每条 dim 切片需要保留、选择或比较的元素个数", "3"],
+    [/^(dim|axis|dim0|dim1)$/, "指定操作发生在哪个维度；负数从最后一维倒数", "-1"],
+    [/^(keepdim)$/, "归约后是否把该维保留为长度 1", "False"],
+    [/^(largest)$/, "True 取最大 k 项；False 取最小 k 项", "True"],
+    [/^(sorted)$/, "是否保证选出的元素按数值顺序返回；False 时顺序不受保证", "True"],
+    [/^(stable)$/, "相等元素是否保持它们在输入中的先后顺序", "False"],
+    [/^(descending)$/, "True 使用降序，False 使用升序", "False"],
+    [/^(dtype)$/, "输出元素的数据类型", "torch.float32"],
+    [/^(device)$/, "数据或计算所在设备", "'cpu' 或 'cuda'"],
+    [/^(out)$/, "可选的预分配输出 Tensor 或 Tensor 元组；结构、shape 和 dtype 必须兼容", "None"],
+    [/^(requires_grad)$/, "是否让浮点或复数结果被 autograd 追踪", "False"],
+    [/^(size|shape|normalized_shape|output_size)$/, "目标尺寸或 shape；各维含义由当前接口决定", "(2, 3)"],
+    [/^(target)$/, "监督学习目标；dtype 与 shape 必须符合损失函数约定", "torch.tensor([1, 0])"],
+    [/^(weight)$/, "权重 Tensor 或样本/类别权重", "None"],
+    [/^(bias)$/, "是否使用偏置，或要加到输出上的偏置 Tensor", "True"],
+    [/^(kernel_size)$/, "滑动窗口或卷积核的空间大小", "3 或 (3, 3)"],
+    [/^(stride)$/, "窗口每次移动的步长", "1"],
+    [/^(padding)$/, "输入边缘补齐的元素数或策略", "0"],
+    [/^(dilation)$/, "卷积核采样点之间的间隔", "1"],
+    [/^(groups)$/, "输入与输出通道的分组方式，必须整除相应通道数", "1"],
+    [/^(reduction)$/, "如何汇总逐元素损失：none、mean 或 sum", "'mean'"],
+    [/^(correction)$/, "方差/标准差的自由度校正值", "1"],
+    [/^(generator)$/, "可选随机数生成器，用于控制可复现性", "None"],
+    [/^(non_blocking)$/, "条件允许时是否尝试异步设备传输", "False"],
+    [/^(copy)$/, "即使属性相同，是否仍强制创建副本", "False"],
+    [/^(memory_format)$/, "输出 Tensor 的内存格式", "torch.preserve_format"],
+    [/^(index|indices)$/, "整数索引 Tensor；通常要求 dtype=torch.int64", "torch.tensor([2, 0])"],
+    [/^(condition|mask)$/, "决定选择或写入位置的布尔条件 Tensor", "torch.tensor([True, False])"],
+    [/^(batch_size)$/, "每次迭代组合多少个样本", "32"],
+    [/^(shuffle)$/, "每轮是否打乱样本顺序", "True"],
+    [/^(lr|learning_rate)$/, "每次参数更新的基础步长", "0.001"],
+  ];
+  const hit = rules.find(([pattern]) => pattern.test(key));
+  return hit ? { meaning: hit[1], sample: hit[2] } : { meaning: `${name} 的具体作用见上方签名与官方说明`, sample: "按任务填写" };
+}
+
 function variablesOf(entry: ApiEntry, remote?: RemoteDoc | null): Variable[] {
-  const params = remote?.parameters?.slice(0, 6) ?? [];
+  const params = (remote?.parameters ?? []).map((raw) => raw.trim()).filter((raw) => raw && !/^(\*|\/)$/.test(raw)).slice(0, 12);
   if (params.length) return params.map((raw) => {
     const name = raw.split(/[=:]/)[0].trim().replace(/^\*+/, "") || "参数";
-    const key = name.toLowerCase();
-    let meaning = "控制该接口行为的输入参数"; let sample = raw.includes("=") ? raw.split("=").slice(1).join("=") : "按数据选择";
-    if (/input|tensor|self|x/.test(key)) { meaning = "要被处理的输入张量或当前对象"; sample = "[[1, 2], [3, 4]]"; }
-    else if (/dim|axis/.test(key)) { meaning = "指定计算发生在哪个张量维度"; sample = "-1"; }
-    else if (/dtype/.test(key)) { meaning = "元素的数据类型"; sample = "torch.float32"; }
-    else if (/device/.test(key)) { meaning = "数据或计算所在设备"; sample = "cpu / cuda"; }
-    else if (/out/.test(key)) { meaning = "可选的输出张量或输出规模"; sample = "None"; }
-    else if (/grad/.test(key)) { meaning = "梯度或是否追踪梯度的设置"; sample = "True"; }
-    else if (/size|shape/.test(key)) { meaning = "目标尺寸或形状"; sample = "[2, 2]"; }
-    return { name, meaning, sample };
+    const info = parameterInfoOf(name);
+    const defaultValue = raw.includes("=") ? raw.split("=").slice(1).join("=").trim() : "";
+    return { name, meaning: info.meaning, sample: defaultValue || info.sample, required: !raw.includes("=") && !raw.startsWith("*"), raw };
   });
-  const base: Variable[] = [{ name: "input / self", meaning: "输入张量或当前操作对象", sample: "[[1, 2], [3, 4]]" }];
-  if (["function", "method", "class"].includes(entry.type)) base.push({ name: "*args", meaning: "按官方签名依次传入的位置参数", sample: "取决于接口" }, { name: "**kwargs", meaning: "带名称的可选配置参数", sample: "dim=-1" });
-  base.push({ name: "result", meaning: "接口返回的张量、对象或状态", sample: "由输入决定" });
-  return base;
+  const guide = operationGuideOf(entry);
+  return [
+    { name: entry.type === "method" ? "self" : "input", meaning: "当前接口处理的主要输入；官方签名加载后会显示精确参数", sample: "见 Example 与输入", required: true },
+    { name: "result", meaning: guide.returns, sample: "由输入与参数共同决定", required: false },
+  ];
+}
+
+function cleanSignature(signature: string) {
+  return signature
+    .replace(/\s*\.\s*/g, ".")
+    .replace(/\s*=\s*/g, "=")
+    .replace(/\s*\(\s*/g, "(")
+    .replace(/\s*,\s*/g, ", ")
+    .replace(/\s*\)\s*/g, ")")
+    .replace(/\s*#\s*$/, "")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+}
+
+function simulationTierOf(entry: ApiEntry): SimulationTier {
+  const family = familyOf(entry), n = cleanLeaf(entry);
+  const numericFamilies = new Set(["autograd", "cross_entropy", "mse", "distance_loss", "bce", "softmax", "activation", "unary", "binary", "comparison", "reduction", "reshape", "squeeze", "transpose", "combine", "split", "matmul", "linear", "convolution", "pooling", "sorting", "counting", "selection", "indexing", "sequence", "random", "fft", "linalg", "foreach"]);
+  if (family === "creation" && n.startsWith("empty")) return { label: "规则示意", note: "只演示分配规则；真实内容未初始化，本页不会伪造一组确定数值。", numeric: false };
+  if (numericFamilies.has(family) || family === "creation") return { label: "数值教学模拟", note: "由网页按页面给出的简化规则计算，用来理解步骤；边界行为仍以真实 PyTorch 为准。", numeric: true };
+  if (["copy_state", "device", "predicate", "inspection", "tensor_bridge", "sparse", "quantization"].includes(family)) return { label: "规则示意", note: "展示 shape、存储或类型规则，不会在浏览器里创建真实 Tensor。", numeric: false };
+  return { label: "流程 / 状态示意", note: "展示调用顺序与状态变化；没有启动真实 Python、GPU、多进程或编译后端。", numeric: false };
+}
+
+function readabilityOf(entry: ApiEntry): ReadabilityContract {
+  const curated = curatedFunctionGuideOf(entry.name);
+  if (curated) return {
+    level: curated.level,
+    call: curatedCallOf(entry),
+    input: curated.input,
+    output: curated.output,
+    shape: curated.shape,
+    autograd: curated.autograd,
+    pitfall: curated.pitfall,
+  };
+  const family = familyOf(entry), n = cleanLeaf(entry), guide = operationGuideOf(entry);
+  const availableQuery = family === "predicate" && n.includes("available");
+  const advanced = new Set(["autograd", "convolution", "fft", "linalg", "optimizer", "distribution", "distributed", "compile", "export", "sparse", "quantization"]);
+  const beginner = new Set(["unary", "binary", "creation", "reshape", "squeeze", "transpose", "reduction", "inspection", "predicate"]);
+  const call = availableQuery
+    ? `直接调用 ${entry.name}()，不需要传入 Tensor 或设备名称。`
+    : family === "copy_state" && n.includes("detach")
+      ? "在 Tensor 上调用 tensor.detach()，这个方法不接收位置参数。"
+      : entry.type === "method"
+    ? `先有一个对象，再调用 obj.${entry.leaf}(...)；不要写成独立函数。`
+    : entry.type === "class"
+      ? `先用 ${entry.name}(...) 构造对象，再用对象的方法或 obj(input)。`
+      : `直接调用 ${entry.name}(...)；主要数据通常放在第一个参数。`;
+  const shapes: Record<string, string> = {
+    unary: "通常与 input 完全同 shape。", binary: "等于两个输入广播后的共同 shape。", comparison: "等于广播后的 shape，元素是 bool。",
+    reduction: "默认删除 dim；keepdim=True 时该维保留为 1。", sorting: n.includes("topk") ? "指定 dim 的长度变成 k；values 与 indices 同 shape。" : "通常与 input 同 shape。",
+    reshape: "变成目标 shape，但元素总数必须不变。", transpose: "只交换维度顺序，元素总数不变。", squeeze: "只增加或删除长度为 1 的维度。",
+    creation: "由 size / shape 参数直接决定。", convolution: "batch 与输出通道保留，空间维按 kernel/stride/padding/dilation 公式变化。",
+    pooling: "通道数通常不变，空间维按窗口、步长与 padding 缩小。", linear: "最后一维从 in_features 变为 out_features。",
+    matmul: "二维时 (M,K) × (K,N) → (M,N)；批量维可能广播。", selection: "等于 condition、input、other 广播后的共同 shape。",
+    indexing: "由 index 的 shape 与被索引维共同决定。", inspection: "多数返回 Python 标量、Size 或属性，不一定返回 Tensor。",
+    copy_state: "数值 shape 通常不变，但存储和计算图关系可能改变。", predicate: "返回一个 Python bool 或 bool Tensor，取决于具体签名。",
+  };
+  let autograd = "浮点/复数 Tensor 参与可微运算时通常会被 autograd 追踪；整数、布尔与对象结果通常不可求导。";
+  if (family === "copy_state" && n.includes("detach")) autograd = "输出从当前计算图分离，不会把后续梯度传回原图；它仍可能与输入共享存储。";
+  else if (family === "grad_mode") autograd = "它直接控制作用域内是否记录新运算；不会回头修改已有 Tensor 的 requires_grad。";
+  else if (availableQuery) autograd = "只返回运行时能力状态，不创建 Tensor，也不参与 autograd。";
+  else if (["predicate", "inspection", "state", "distributed", "compile", "export", "object", "api_behavior"].includes(family)) autograd = "这个接口本身主要返回状态、对象或流程结果；是否可求导要看它内部调用的 Tensor 运算。";
+  const pitfalls: Record<string, string> = {
+    sorting: n.includes("topk") ? "k 不能超过 dim 的长度；largest 决定取大还是取小，sorted 只决定返回的 k 项是否排序。" : "dim=-1 表示最后一维；稳定排序与降序是不同概念。",
+    creation: n.startsWith("empty") ? "empty 不是 zeros：读取前必须完整写入，任何一次显示出的数值都不受保证。" : "dtype 和 device 不写时会受默认设置与输入数据影响。",
+    copy_state: n.includes("detach") ? "detach 不等于复制：修改共享存储可能同时影响原 Tensor；需要独立数据时用 detach().clone()。" : "先确认结果是否共享底层存储，再决定能否安全原地修改。",
+    device: "设备移动可能产生复制与同步；non_blocking 只有满足固定内存等条件时才可能异步。",
+    predicate: n.includes("available") ? "它只说明当前运行时是否可用，不保证某次分配、编译或算子一定成功。" : "先确认返回的是 Python bool 还是逐元素 bool Tensor。",
+    reduction: "dim 可以是负数；空张量、NaN、dtype 与 correction 会改变结果或合法性。",
+    reshape: "reshape 可能返回 view，也可能复制；需要保证共享存储时不要只凭 shape 判断。",
+    distributed: "所有 rank 必须以兼容顺序进入集合通信，否则可能永久等待。",
+    compile: "首次调用有编译开销；输入 shape、dtype 或 Python 分支变化可能触发重新编译或 graph break。",
+    tensor_bridge: n === "item" ? "只能用于单元素 Tensor；在 GPU 上调用还可能触发同步。" : "转成 NumPy 前注意 CPU、梯度状态，以及两边是否共享存储。",
+  };
+  return {
+    level: advanced.has(family) ? "进阶" : beginner.has(family) ? "入门" : "常用",
+    call,
+    input: availableQuery ? "没有数据输入；它读取当前 PyTorch 构建、驱动和硬件环境。" : guide.what,
+    output: availableQuery ? "返回一个 Python bool：当前运行时可用为 True，否则为 False。" : guide.returns,
+    shape: availableQuery ? "返回 Python bool，没有 Tensor shape。" : shapes[family] ?? "不能只由接口名判断；先看签名和返回值说明，再用小 shape 验证。",
+    autograd,
+    pitfall: pitfalls[family] ?? (n.endsWith("_") ? "名称以下划线结尾通常表示原地修改；先确认是否会破坏 autograd 所需的中间值。" : "先核对 dtype、device、shape、返回类型和是否修改输入，不要只看函数名猜行为。"),
+  };
+}
+
+function exampleSpecOf(entry: ApiEntry): ExampleSpec {
+  const family = familyOf(entry), n = cleanLeaf(entry);
+  if (n === "topk") return { title: "可直接运行：同时看值和原索引", code: "import torch\n\nx = torch.tensor([4, 1, 7, 3, 9, 2])\nvalues, indices = torch.topk(x, k=3, largest=True, sorted=True)\nprint(values)\nprint(indices)", output: "tensor([9, 7, 4])\ntensor([4, 2, 0])", runnable: true };
+  if (family === "creation" && n.startsWith("empty")) return { title: "可直接运行：只验证 shape，不断言内容", code: "import torch\n\nx = torch.empty((2, 3))\nprint(x.shape)\nx.fill_(0)          # 完整写入后再读取\nprint(x)", output: "torch.Size([2, 3])\ntensor([[0., 0., 0.],\n        [0., 0., 0.]])", runnable: true };
+  if (family === "copy_state" && n.includes("detach")) return { title: "可直接运行：验证梯度与共享存储", code: "import torch\n\nx = torch.tensor([1.0, 2.0], requires_grad=True)\ny = x.detach()\nprint(y.requires_grad)\ny[0] = 9.0\nprint(x)             # detach 默认共享底层存储", output: "False\ntensor([9., 2.], requires_grad=True)", runnable: true };
+  if (entry.name === "torch.cuda.is_available") return { title: "可直接运行：查询当前运行时", code: "import torch\n\nprint(torch.cuda.is_available())", output: "True 或 False（取决于机器、驱动和当前 PyTorch 构建）", runnable: true };
+  if (entry.name === "torch.compile") return { title: "可直接运行：编译一个小函数", code: "import torch\n\ndef fn(x):\n    return torch.sin(x) + x\n\noptimized_fn = torch.compile(fn)\nprint(optimized_fn(torch.tensor([0.0, 1.0])))", output: "tensor([0.0000, 1.8415])（首次调用可能较慢）", runnable: true };
+  if (family === "binary") return { title: "可直接运行：观察 broadcasting", code: `import torch\n\nx = torch.tensor([[1], [2]])\nother = torch.tensor([10, 20])\nprint(torch.${n}(x, other))`, output: "输出 shape 为 (2, 2)；每个位置按该接口的二元规则计算。", runnable: ["add", "sub", "mul", "div", "pow"].includes(n) };
+  if (family === "reduction" && ["sum", "mean", "max", "min"].includes(n)) return { title: "可直接运行：明确指定 dim", code: `import torch\n\nx = torch.tensor([[1.0, 2.0], [3.0, 4.0]])\nprint(torch.${n}(x, dim=0))`, output: n === "sum" ? "tensor([4., 6.])" : "输出沿 dim=0 汇总；max/min 还可能返回 indices。", runnable: true };
+  if (family === "tensor_bridge" && n === "item") return { title: "可直接运行：Tensor 变 Python 标量", code: "import torch\n\nx = torch.tensor([3.5])\nvalue = x.item()\nprint(value, type(value))", output: "3.5 <class 'float'>", runnable: true };
+  const curated = curatedFunctionGuideOf(entry.name);
+  if (curated) return { title: "最小调用骨架：先看懂参数角色", code: `import torch\n\n${curated.example}`, output: `观察重点：${curated.output} ${curated.shape}`, runnable: false };
+  const call = entry.type === "method" ? `result = tensor.${entry.leaf}(...)` : entry.type === "class" ? `obj = ${entry.name}(...)\nresult = obj(input)` : `result = ${entry.name}(...)`;
+  return { title: "调用骨架：请按上方签名补齐参数", code: `import torch\n\n${call}\nprint(result)`, output: "返回类型、shape 与副作用见本页“30 秒读懂”和官方签名。", runnable: false };
+}
+
+function searchRank(entry: ApiEntry, keyword: string) {
+  const name = entry.name.toLowerCase(), leaf = entry.leaf.toLowerCase();
+  if (name === keyword) return 0;
+  if (leaf === keyword) return 1;
+  if (name.startsWith(keyword)) return 2;
+  if (leaf.startsWith(keyword)) return 3;
+  return 4;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -228,6 +402,8 @@ function conceptOf(entry: ApiEntry) {
 }
 
 function scenarioOf(entry: ApiEntry) {
+  const curated = curatedFunctionGuideOf(entry.name);
+  if (curated) return curated.useWhen;
   if(familyOf(entry)==="foreach")return foreachOperation(entry).inPlace?"在优化器或批量参数更新中，一次原地处理多个 Tensor，减少逐张量发起运算的开销":"在优化器或批量张量处理中，一次对多个 Tensor 执行相同逐元素运算并获得新列表";
   const map: Record<string, string> = {
     "Tensor 方法": "在模型前向计算中直接处理一个已有张量",
@@ -248,6 +424,7 @@ function scenarioOf(entry: ApiEntry) {
 function familyOf(entry: ApiEntry) {
   const n = cleanLeaf(entry);
   if (/^_foreach_/.test(n)) return "foreach";
+  if (/no_grad|enable_grad|inference_mode|set_grad_enabled/.test(n)) return "grad_mode";
   if (/backward|^grad$|gradients?/.test(n) || entry.group === "自动微分") return "autograd";
   if (/cross.*entropy/.test(n)) return "cross_entropy";
   if (/mse/.test(n)) return "mse";
@@ -276,14 +453,21 @@ function familyOf(entry: ApiEntry) {
   if (/zeros|ones|full|empty|eye|tensor|as_tensor/.test(n)) return "creation";
   if (/rand|normal|bernoulli|multinomial|poisson/.test(n) || entry.group === "随机数") return "random";
   if (/fft|ifft|rfft|irfft/.test(n) || entry.group === "傅里叶变换") return "fft";
-  if (/det|inverse|inv|solve|matrix_rank|norm/.test(n) || entry.group === "线性代数") return "linalg";
+  if (/clone|copy|detach|contiguous|requires_grad/.test(n)) return "copy_state";
+  if (/^(item|tolist|numpy)$/.test(n)) return "tensor_bridge";
+  if (/state_dict/.test(n) && entry.group === "神经网络模块") return "module_state";
+  if (/^(det|determinant|inverse|inv|solve|matrix_rank|norm)$/.test(n) || entry.group === "线性代数") return "linalg";
   if (entry.group === "优化器") return "optimizer";
   if (entry.group === "概率分布") return "distribution";
   if (entry.group === "数据加载") return "dataloader";
   if (/shape|^size$|^dim$|ndim|numel|element_size/.test(n)) return "inspection";
-  if (/clone|copy|detach|contiguous|requires_grad/.test(n)) return "copy_state";
-  if (/^to$|^cpu$|^cuda$|^xpu$|float|double|half|long|bool/.test(n) || entry.group === "设备与加速") return "device";
   if (/^is_|^has_|^can_|enabled|available/.test(n)) return "predicate";
+  if (/^(to|cpu|cuda|xpu|float|double|half|long|bool)$/.test(n) || entry.group === "设备与加速") return "device";
+  if (entry.group === "分布式训练") return "distributed";
+  if (entry.group === "模型导出" || entry.name.startsWith("torch.export")) return "export";
+  if (n === "compile" || entry.group === "编译与导出" || /^torch\.(compiler|_dynamo)/.test(entry.name)) return "compile";
+  if (entry.group === "稀疏张量") return "sparse";
+  if (entry.group === "量化") return "quantization";
   if (/^set_|enable|disable|config/.test(n) || entry.type === "data" || entry.type === "attribute" || entry.type === "property") return "state";
   if (entry.type === "class" || entry.type === "module") return "object";
   return "api_behavior";
@@ -295,7 +479,7 @@ const familyLabels: Record<string, string> = {
   squeeze:"增删单维",transpose:"维度交换",combine:"拼接与堆叠",split:"拆分与解绑",reduction:"统计与归约",sorting:"排序与 Top-K",counting:"去重、计数与直方图",
   selection:"条件选择",indexing:"索引、Gather 与 Scatter",binary:"二元逐元素运算",comparison:"比较与近似判断",unary:"一元数学函数",sequence:"等差与等距序列",creation:"张量创建与填充",
   random:"随机采样",fft:"傅里叶变换",linalg:"线性代数",optimizer:"参数优化与调度",distribution:"概率分布与变换",dataloader:"数据集、采样与批处理",inspection:"形状与存储检查",
-  copy_state:"复制、视图与梯度状态",device:"设备与数据类型",predicate:"能力与状态判断",state:"配置、属性与开关",foreach:"Foreach 批量张量运算",object:"类、容器与对象",api_behavior:"其他接口与工具",
+  copy_state:"复制、视图与梯度状态",tensor_bridge:"Python 与 NumPy 转换",module_state:"模块参数与状态",grad_mode:"梯度记录模式",device:"设备与数据类型",predicate:"能力与状态判断",state:"配置、属性与开关",distributed:"分布式通信",compile:"编译与图捕获",export:"Export 图与动态形状",sparse:"稀疏张量运算",quantization:"量化与低精度",foreach:"Foreach 批量张量运算",object:"类、容器与对象",api_behavior:"其他接口与工具",
 };
 
 function subcategoryOf(entry: ApiEntry) {
@@ -699,7 +883,7 @@ function defaultSpec(entry: ApiEntry) {
     combine: { tensors: [[1, 2], [3, 4]], other: [[5, 6], [7, 8]], dim: 0 },
     split: { input: [10, 20, 30, 40, 50, 60], sections: 3, dim: 0 },
     reduction: { input: [[v[0], 7, v[1]], [8, v[2], 5]], dim: -1 },
-    sorting: { input: [4, 1, 7, 3, 9, 2], k: 3, descending: true },
+    sorting: n.includes("topk") ? { input: [4, 1, 7, 3, 9, 2], dim: -1, k: 3, largest: true, sorted: true } : { input: [4, 1, 7, 3, 9, 2], dim: -1, descending: false, stable: false },
     counting: { input: [3, 1, 3, 2, 1, 3, 4, 2] },
     selection: { condition: [true, false, true, false], input: [10, 20, 30, 40], other: [-1, -1, -1, -1] },
     indexing: { input: [[10, 20, 30], [40, 50, 60]], index: [2, 0], dim: 1 },
@@ -707,7 +891,7 @@ function defaultSpec(entry: ApiEntry) {
     comparison: { input: [1, 4, 2, 7], other: 3 },
     unary: { input: n.includes("log") || n === "sqrt" ? [0.25, 1, 4, 9] : [-2.7, -0.5, 0, 1.2, 3.8] },
     sequence: n.includes("linspace") ? { start: -1, end: 1, steps: 5 } : { start: 1, end: 10, step: 2 },
-    creation: { data: [[v[0], v[1]], [v[2], v[0] + v[1]]], shape: [2, 2], fill_value: v[0], dtype: "float32" },
+    creation: n.startsWith("empty") ? { shape: [2, 2], dtype: "float32" } : { data: [[v[0], v[1]], [v[2], v[0] + v[1]]], shape: [2, 2], fill_value: v[0], dtype: "float32" },
     random: { shape: [2, 3], seed: 42, distribution: n.includes("normal") ? "normal(0,1)" : "uniform(0,1)" },
     fft: { input: [1, 0, -1, 0] },
     linalg: { matrix: [[4, 7], [2, 6]], vector: [1, 0] },
@@ -717,8 +901,16 @@ function defaultSpec(entry: ApiEntry) {
     inspection: { input: [[[1, 2], [3, 4]], [[5, 6], [7, 8]]] },
     copy_state: { input: [1, 2, 3], requires_grad: true, contiguous: true },
     device: { input: [v[0], v[1], v[2]], from_device: "cpu", to_device: n || "cuda", from_dtype: "float32", to_dtype: n.includes("long") ? "int64" : "float32" },
-    predicate: { input: [1, 2, 3], device: "cpu", dtype: "float32", condition: entry.leaf },
+    predicate: { input: [1, 2, 3], device: "cpu", dtype: "float32", condition: entry.leaf, simulated_available: false },
     state: { setting: entry.name, before: false, requested: true },
+    grad_mode: { enabled_before: true, enabled_inside: !n.includes("no_grad") && !n.includes("inference") },
+    tensor_bridge: { input: [3.5], device: "cpu", requires_grad: false, shares_storage_when_possible: n === "numpy" },
+    module_state: { module: "model", strict: true, keys: ["layer.weight", "layer.bias"] },
+    distributed: { process_group: "world", ranks: [0, 1], tensor_before: [1, 2], operation: entry.leaf, async_op: false },
+    compile: { callable: "model_or_function", example_input_shape: [2, 3], backend: "inductor", first_call_compiles: true },
+    export: { module: "model", example_input_shape: [2, 3], dynamic_shapes: null },
+    sparse: { layout: "sparse_coo", indices: [[0, 1], [1, 0]], values: [3, 4], size: [2, 2] },
+    quantization: { input: [-1, 0, 1], scale: 0.1, zero_point: 10, dtype: "quint8" },
     object: { constructor: entry.name, arguments: { input_features: v[0] + 2, output_features: v[1] + 1 }, sample_input_shape: [2, v[0] + 2] },
     foreach: { tensors: [[1.2,-1.8,2.0],[[2.3,-0.2],[4.0,4.8]]] },
     api_behavior: { api: entry.name, example_values: v, operation: operationGuideOf(entry).title, parameter_hint: entry.type === "method" ? "在对应对象上调用" : entry.type === "function" ? "把示例值替换进官方签名" : "按构造参数创建对象" },
@@ -752,13 +944,13 @@ function simulate(entry: ApiEntry, source: string): Simulation {
   else if (family === "linear") { value=spec.weight.map((w:number[],j:number)=>w.reduce((s,x,i)=>s+x*spec.input[i],spec.bias[j]));trace=spec.weight.map((w:number[],j:number)=>`y${j} = ${w.map((x,i)=>`${x}×${spec.input[i]}`).join(" + ")} + ${spec.bias[j]} = ${value[j]}`);}
   else if (family === "convolution" && n.includes("1d")) { const rawX=spec.input,rawK=spec.kernel,x=Array.isArray(rawX[0])?rawX:[rawX],k=Array.isArray(rawK[0])?rawK:[rawK],stride=Number(spec.stride??1),padding=Number(spec.padding??0),dilation=Number(spec.dilation??1),length=x[0].length,kernelSize=k[0].length,outLength=Math.floor((length+2*padding-dilation*(kernelSize-1)-1)/stride)+1;value=Array.from({length:outLength},(_,t)=>k.reduce((sum:number,weights:number[],c:number)=>sum+weights.reduce((channel:number,weight:number,u:number)=>{const position=t*stride+u*dilation-padding;return channel+weight*(position>=0&&position<length?x[c][position]:0);},0),Number(spec.bias??0)));trace=(value as number[]).map((result,t)=>{const terms=k.flatMap((weights:number[],c:number)=>weights.map((weight:number,u:number)=>{const position=t*stride+u*dilation-padding;return `${weight}×X[c=${c},t=${position}]=${position>=0&&position<length?x[c][position]:0}`;}));return `输出 Y[t=${t}]：${terms.join(" + ")} + bias(${spec.bias??0}) = ${result}`;});}
   else if (family === "convolution") { const rawX=spec.input,rawK=spec.kernel,x=shapeOf(rawX).length===3?rawX:[rawX],k=shapeOf(rawK).length===3?rawK:[rawK],stride=Number(spec.stride??1),oh=Math.floor((x[0].length-k[0].length)/stride)+1,ow=Math.floor((x[0][0].length-k[0][0].length)/stride)+1;value=Array.from({length:oh},(_,i)=>Array.from({length:ow},(_,j)=>k.reduce((channelSum:number,plane:number[][],c:number)=>channelSum+plane.reduce((s:number,row:number[],u:number)=>s+row.reduce((q,z,v)=>q+z*x[c][i*stride+u][j*stride+v],0),0),Number(spec.bias))));trace=[];for(let i=0;i<oh;i++)for(let j=0;j<ow;j++){const terms=k.flatMap((plane:number[][],c:number)=>plane.flatMap((row:number[],u:number)=>row.map((z:number,v:number)=>`${z}×X[c=${c},h=${i*stride+u},w=${j*stride+v}]=${x[c][i*stride+u][j*stride+v]}`)));trace.push(`输出 Y[h=${i},w=${j}]：${terms.join(" + ")} + bias(${spec.bias??0}) = ${value[i][j]}`);}}
-  else if (family === "pooling") { const x=spec.input,size=Number(spec.kernel_size),out=[] as number[][];for(let i=0;i<x.length;i+=Number(spec.stride)){const row=[];for(let j=0;j<x[0].length;j+=Number(spec.stride)){const window=x.slice(i,i+size).flatMap((r:number[])=>r.slice(j,j+size));row.push(n.includes("avg")?window.reduce((a:number,b:number)=>a+b,0)/window.length:Math.max(...window));trace.push(`窗口 [${window}] → ${n.includes("avg")?"平均":"最大"}值 ${row.at(-1)}`);}out.push(row);}value=out;}
-  else if (family === "sorting") { const sorted=[...spec.input].sort((a:number,b:number)=>spec.descending?b-a:a-b);value=n.includes("topk")?{values:sorted.slice(0,spec.k),indices:sorted.slice(0,spec.k).map((x:number)=>spec.input.indexOf(x))}:sorted;trace=[`原序列 [${spec.input}]`,`${spec.descending?"降序":"升序"}比较并重排 → [${sorted}]`,n.includes("topk")?`取前 ${spec.k} 个并返回原索引`:"返回排序结果"];}
+  else if (family === "pooling") { const x=spec.input,size=Number(spec.kernel_size),stride=Number(spec.stride??size),out=[] as number[][],outH=Math.floor((x.length-size)/stride)+1,outW=Math.floor((x[0].length-size)/stride)+1;for(let oi=0;oi<outH;oi++){const row=[];for(let oj=0;oj<outW;oj++){const i=oi*stride,j=oj*stride,window=x.slice(i,i+size).flatMap((r:number[])=>r.slice(j,j+size));row.push(n.includes("avg")?window.reduce((a:number,b:number)=>a+b,0)/window.length:Math.max(...window));trace.push(`输出[${oi},${oj}] 的完整窗口 [${window}] → ${n.includes("avg")?"平均":"最大"}值 ${row.at(-1)}`);}out.push(row);}value=out;}
+  else if (family === "sorting") { const pairs=(spec.input as number[]).map((item,index)=>({item,index}));if(n.includes("topk")){const largest=spec.largest!==false,ranked=[...pairs].sort((a,b)=>largest?b.item-a.item:a.item-b.item),picked=ranked.slice(0,Number(spec.k));if(spec.sorted===false)picked.sort((a,b)=>a.index-b.index);value={values:picked.map(x=>x.item),indices:picked.map(x=>x.index)};trace=[`原序列 [${spec.input}]`,`${largest?"从大到小":"从小到大"}比较候选项`, `取 ${spec.k} 项；values 与 indices 一一对应${spec.sorted===false?"，返回顺序在真实 PyTorch 中不受保证":"，并按数值排序"}`];}else{const descending=Boolean(spec.descending),ranked=[...pairs].sort((a,b)=>descending?b.item-a.item:a.item-b.item);value=n.includes("argsort")?ranked.map(x=>x.index):{values:ranked.map(x=>x.item),indices:ranked.map(x=>x.index)};trace=[`原序列 [${spec.input}]`,`${descending?"降序":"升序"}比较并保留原索引`,n.includes("argsort")?"只返回能重排原输入的 indices":"返回 values 与 indices 两个字段"];} }
   else if (family === "counting") { const counts=spec.input.reduce((a:Record<string,number>,x:number)=>(a[x]=(a[x]??0)+1,a),{});value=n.includes("unique")?Object.keys(counts).map(Number):counts;trace=Object.entries(counts).map(([x,c])=>`数值 ${x} 出现 ${c} 次`);}
   else if (family === "selection") { value=spec.condition.map((c:boolean,i:number)=>c?spec.input[i]:spec.other[i]);trace=spec.condition.map((c:boolean,i:number)=>`位置 ${i}：condition=${c} → 选择 ${value[i]}`);}
   else if (family === "indexing") { const a=spec.input as number[][],indices=(spec.index as number[]).map(Number),dim=Number(spec.dim??0);value=dim===1?a.map((row)=>indices.map((index)=>row[index])):indices.map((index)=>a[index]);trace=dim===1?a.flatMap((row,i)=>indices.map((index,j)=>`输出[${i},${j}] ← 输入[${i},${index}] = ${row[index]}`)):indices.map((index,i)=>`输出第 ${i} 行 ← 输入第 ${index} 行`);mode="张量变换";}
   else if (family === "sequence") { const vals=[];if(n.includes("linspace")){for(let i=0;i<spec.steps;i++)vals.push(spec.start+i*(spec.end-spec.start)/(spec.steps-1));trace=[`间隔 = (${spec.end}−${spec.start})/(${spec.steps}−1)`,`从 start 起累计间隔，共生成 ${spec.steps} 项`];}else{for(let x=spec.start;x<spec.end;x+=spec.step)vals.push(x);trace=[`从 ${spec.start} 开始`,`每次增加 ${spec.step}`,`到 ${spec.end} 前停止`];}value=vals;}
-  else if (family === "creation") { const dims=(spec.shape as number[]).map(Number),count=dims.reduce((a:number,b:number)=>a*b,1),source=visualLeaves(spec.data);let values:number[];if(n.includes("zeros")||n.includes("empty"))values=Array(count).fill(0);else if(n.includes("ones"))values=Array(count).fill(1);else if(n.includes("eye")){const rows=dims[0]??2,cols=dims[1]??rows;values=Array.from({length:rows*cols},(_,i)=>Math.floor(i/cols)===i%cols?1:0);}else if(n.includes("full"))values=Array(count).fill(Number(spec.fill_value??0));else values=source.map(Number);value=rebuild(values,dims.length?dims:shapeOf(spec.data));trace=[`确定输出 shape=[${dims.length?dims:shapeOf(spec.data)}]，需要 ${values.length} 个元素`,n.includes("eye")?"主对角线填 1，其余位置填 0":`按 ${entry.leaf} 的填充值规则生成元素`,`按行写入输出张量`];}
+  else if (family === "creation") { const dims=(spec.shape as number[]).map(Number),count=dims.reduce((a:number,b:number)=>a*b,1),source=visualLeaves(spec.data);if(n.startsWith("empty")){value={shape:dims,dtype:spec.dtype,contents:"未初始化：真实 PyTorch 不保证任何元素值"};mode="对象与状态";title="只展示内存分配规则";trace=[`确定 shape=[${dims}]、dtype=${spec.dtype}，共分配 ${count} 个元素的位置`,"不执行填零或其他初始化操作","读取前必须由后续运算完整写入；网页故意不展示伪造数值"];}else{let values:number[];if(n.includes("zeros"))values=Array(count).fill(0);else if(n.includes("ones"))values=Array(count).fill(1);else if(n.includes("eye")){const rows=dims[0]??2,cols=dims[1]??rows;values=Array.from({length:rows*cols},(_,i)=>Math.floor(i/cols)===i%cols?1:0);}else if(n.includes("full"))values=Array(count).fill(Number(spec.fill_value??0));else values=source.map(Number);value=rebuild(values,dims.length?dims:shapeOf(spec.data));trace=[`确定输出 shape=[${dims.length?dims:shapeOf(spec.data)}]，需要 ${values.length} 个元素`,n.includes("eye")?"主对角线填 1，其余位置填 0":`按 ${entry.leaf} 的填充值规则生成元素`,`按行写入输出张量`];}}
   else if (family === "random") { const dims=(spec.shape as number[]).map(Number),count=dims.reduce((a:number,b:number)=>a*b,1);let state=Number(spec.seed??42)>>>0;const uniform=()=>{state=(1664525*state+1013904223)>>>0;return state/4294967296;};const values=Array.from({length:count},()=>n.includes("normal")?Math.sqrt(-2*Math.log(Math.max(uniform(),1e-12)))*Math.cos(2*Math.PI*uniform()):uniform());value=rebuild(values,dims);trace=[`固定 seed=${spec.seed??42}，因此每次实验可复现`,n.includes("normal")?"用 Box–Muller 把均匀随机数变换为正态随机数":"线性同余生成 [0,1) 均匀随机数",`生成 ${count} 个数并重组为 shape=[${dims}]`];}
   else if (family === "fft") { const x=spec.input.map(Number),N=x.length;const spectrum=Array.from({length:N},(_,k)=>{let re=0,im=0;for(let t=0;t<N;t++){re+=x[t]*Math.cos(-2*Math.PI*k*t/N);im+=x[t]*Math.sin(-2*Math.PI*k*t/N);}return {real:Number(re.toFixed(5)),imag:Number(im.toFixed(5))};});value=spectrum;trace=spectrum.map((z:{real:number;imag:number},k:number)=>`频点 k=${k}：Σ x[n]·e^(−i2π·${k}n/${N}) = ${z.real}${z.imag<0?"":"+"}${z.imag}i`);}
   else if (family === "linalg") { const [[a,b],[c,d]]=spec.matrix,det=a*d-b*c;if(n.includes("det"))value=det;else if(n.includes("inv")||n.includes("inverse"))value=[[d/det,-b/det],[-c/det,a/det]];else value={matrix:spec.matrix,determinant:det,frobenius_norm:Math.sqrt(a*a+b*b+c*c+d*d)};trace=[`det = ${a}×${d} − ${b}×${c} = ${det}`,n.includes("inv")?`A⁻¹ = (1/${det})·[[${d},${-b}],[${-c},${a}]]`:"根据接口继续做对应线性代数运算"]}
@@ -768,7 +960,8 @@ function simulate(entry: ApiEntry, source: string): Simulation {
   else if (family === "copy_state") { value={values:input,requires_grad:n.includes("detach")?false:spec.requires_grad,contiguous:spec.contiguous,shares_storage:n.includes("clone")?false:!n.includes("copy")};mode="对象与状态";title="张量值与元数据已更新";trace=[`复制数值 [${flat(input)}]`,n.includes("detach")?"从计算图分离，requires_grad=False":"保留梯度设置",n.includes("clone")?"分配独立存储":"按接口规则处理存储关系"];}
   else if (family === "device") { value={values:input,before:{device:spec.from_device,dtype:spec.from_dtype},after:{device:spec.to_device,dtype:spec.to_dtype},numeric_values_changed:false};mode="对象与状态";title="设备或 dtype 转换结果";trace=[`原张量：device=${spec.from_device}, dtype=${spec.from_dtype}`,`请求转换到 device=${spec.to_device}, dtype=${spec.to_dtype}`,"数值保持不变；真实内存迁移需要对应 PyTorch 硬件后端"];}
   else if (family === "state") { value={setting:spec.setting,before:spec.before,after:spec.requested,changed:spec.before!==spec.requested};mode="对象与状态";title="配置值变化";trace=[`读取 ${spec.setting} = ${spec.before}`,`写入请求值 ${spec.requested}`,`最终值 = ${spec.requested}`];}
-  else if (family === "predicate") { const result=n.includes("available")?spec.device==="cpu":n.includes("float")?spec.dtype.includes("float"):Array.isArray(spec.input);value={condition:entry.leaf,result};mode="对象与状态";title="条件判断结果";trace=[`读取对象属性 device=${spec.device}, dtype=${spec.dtype}`,`应用判断 ${entry.leaf}`,`返回布尔值 ${result}`];}
+  else if (family === "predicate") { const result=n.includes("available")?Boolean(spec.simulated_available):n.includes("float")?spec.dtype.includes("float"):Array.isArray(spec.input);value={condition:entry.leaf,result,runtime_note:n.includes("available")?"示意值由 simulated_available 提供；真实结果必须在目标机器运行 PyTorch 查询":"按页面给定属性判断"};mode="对象与状态";title="条件判断规则示意";trace=[n.includes("available")?"读取当前 PyTorch 构建、驱动与硬件状态（网页不实际探测）":`读取对象属性 device=${spec.device}, dtype=${spec.dtype}`,`应用判断 ${entry.leaf}`,`返回布尔值 ${result}`];}
+  else if (["grad_mode","tensor_bridge","module_state","distributed","compile","export","sparse","quantization"].includes(family)) { const guide=operationGuideOf(entry);value={api:entry.name,simulation_only:true,input_contract:spec,returns:guide.returns,side_effect:guide.sideEffect};mode="对象与状态";title=guide.title;trace=[...guide.steps,guide.returns,guide.sideEffect];}
   else if (family === "object") { value={type:entry.name,constructor_arguments:spec.arguments,created:true,sample_input_shape:spec.sample_input_shape};mode="对象与状态";title="对象构造结果";trace=[`解析 ${entry.leaf} 构造参数`,`创建 ${entry.name} 实例`,`记录输入约束 shape=${JSON.stringify(spec.sample_input_shape)}`];}
   else if (family === "foreach") { const {base,inPlace,rule}=foreachOperation(entry),tensors=spec.tensors as unknown[];const calculate=(x:number)=>rule?rule.example(x):x;const outputs=tensors.map(tensor=>mapDeep(tensor,calculate));value=inPlace?{returned:null,mutated_inputs:outputs}:outputs;mode="数值计算";title=`${entry.leaf} 已处理 ${tensors.length} 个张量`;trace=tensors.map((tensor,k)=>{const before=flat(tensor),after=flat(outputs[k]);return `Tensor ${k}：${before.map((x,i)=>`${x} → ${after[i]}`).join("，")}`;});trace.unshift(`列表长度 ${tensors.length}；逐个张量执行 torch.${base}，张量之间不广播`);trace.push(inPlace?"名称以下划线结尾：结果写回输入张量，返回 None":"创建并返回同样长度的新 Tensor 列表，原输入不变");}
   else { const vals=spec.example_values??seededValues(entry),guide=operationGuideOf(entry);value={api:entry.name,example_call:entry.name.startsWith("torch.Tensor.")?`tensor.${entry.leaf}(${vals.join(", ")})`:`${entry.name}(${vals.join(", ")})`,input_values:vals,operation:guide.title,returns:guide.returns,side_effect:guide.sideEffect};mode="对象与状态";title=guide.title;trace=[...guide.steps,guide.returns,guide.sideEffect];}
@@ -777,22 +970,27 @@ function simulate(entry: ApiEntry, source: string): Simulation {
 
 export default function FullApiBrowser() {
   const [query, setQuery] = useState(""); const [group, setGroup] = useState("全部模块"); const [subcategory, setSubcategory] = useState("全部细分类"); const [kind, setKind] = useState<ApiKind>("函数"); const [page, setPage] = useState(0);
+  const [curatedOnly,setCuratedOnly]=useState(false);
   const [detailTab,setDetailTab]=useState<DetailTab>("overview"); const [showComparisonDirectory,setShowComparisonDirectory]=useState(false);
   const [selectedName, setSelectedName] = useState("torch.add"); const [remote, setRemote] = useState<RemoteDoc | null>(null); const [docLoading, setDocLoading] = useState(true);
   const initial = entries.find((x) => x.name === "torch.add") ?? entries.find((x)=>x.type==="function") ?? entries[0];
   const [spec, setSpec] = useState(() => defaultSpec(initial)); const [sim, setSim] = useState<Simulation>(() => simulate(initial, defaultSpec(initial))); const [simError, setSimError] = useState("");
   const [runState, setRunState] = useState<"idle" | "running" | "success" | "error">("idle"); const [runCount, setRunCount] = useState(0); const [lastRunAt, setLastRunAt] = useState("");
+  const [exampleCopied,setExampleCopied]=useState(false);
   const outputRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const pageSize = 12;
   const kindCounts=useMemo(()=>Object.fromEntries((["函数","类","方法","其他"] as ApiKind[]).map(name=>[name,entries.filter(entry=>kindOf(entry)===name).length])) as Record<ApiKind,number>,[]);
   const groupCountsByKind=useMemo(()=>Object.entries(entries.filter(entry=>kindOf(entry)===kind).reduce<Record<string,number>>((all,entry)=>(all[entry.group]=(all[entry.group]??0)+1,all),{})).sort((a,b)=>b[1]-a[1]),[kind]);
   const subcategoryCounts=useMemo(()=>{const scope=entries.filter(entry=>kindOf(entry)===kind&&(group==="全部模块"||entry.group===group));const counts=new Map<string,number>();scope.forEach(entry=>{const name=subcategoryOf(entry);counts.set(name,(counts.get(name)??0)+1);});return [...counts.entries()].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0],"zh-CN"));},[group,kind]);
-  const filtered = useMemo(() => { const keyword=query.trim().toLowerCase(); return entries.filter((entry)=>kindOf(entry)===kind&&(group==="全部模块"||entry.group===group)&&(subcategory==="全部细分类"||subcategoryOf(entry)===subcategory)&&(!keyword||`${entry.name} ${entry.summary} ${entry.typeLabel} ${entry.group} ${subcategoryOf(entry)}`.toLowerCase().includes(keyword))); }, [query,group,subcategory,kind]);
+  const filtered = useMemo(() => { const keyword=query.trim().toLowerCase(); const matches=entries.filter((entry)=>{const curated=curatedFunctionGuideOf(entry.name);const searchable=`${entry.name} ${entry.summary} ${entry.typeLabel} ${entry.group} ${subcategoryOf(entry)} ${curated?.purpose??""} ${curated?.input??""} ${curated?.output??""} ${curated?.shape??""} ${curated?.pitfall??""} ${curated?.useWhen??""} ${curated?.avoidWhen??""} ${curated?.related.join(" ")??""}`.toLowerCase();const browsingScope=kindOf(entry)===kind&&(group==="全部模块"||entry.group===group)&&(subcategory==="全部细分类"||subcategoryOf(entry)===subcategory);return (!curatedOnly||Boolean(curated))&&(keyword?searchable.includes(keyword):browsingScope);}); return keyword?[...matches].sort((a,b)=>searchRank(a,keyword)-searchRank(b,keyword)||a.name.localeCompare(b.name)):matches; }, [query,group,subcategory,kind,curatedOnly]);
   const pages=Math.max(1,Math.ceil(filtered.length/pageSize)), safePage=Math.min(page,pages-1), visible=filtered.slice(safePage*pageSize,(safePage+1)*pageSize);
+  const isSearching=Boolean(query.trim());
   const selected=entries.find((item)=>item.name===selectedName)??visible[0]??entries[0];
+  const contract=readabilityOf(selected), tier=simulationTierOf(selected), example=exampleSpecOf(selected), curated=curatedFunctionGuideOf(selected.name);
 
   useEffect(() => { let active=true; fetch(`/api/docs?name=${encodeURIComponent(selected.name)}&url=${encodeURIComponent(selected.url)}`).then((r)=>r.json()).then((data)=>{if(active){setRemote(data);setDocLoading(false);}}).catch(()=>{if(active){setRemote({error:"官方详情暂时无法读取"});setDocLoading(false);}}); return()=>{active=false;}; }, [selected.name,selected.url]);
+  useEffect(()=>{const timer=window.setTimeout(()=>{const requested=new URLSearchParams(window.location.search).get("api"),entry=entries.find(item=>item.name===requested);if(entry){const next=defaultSpec(entry);setSelectedName(entry.name);setKind(kindOf(entry));setGroup(entry.group);setSubcategory(subcategoryOf(entry));setSpec(next);setSim(simulate(entry,next));}},0);return()=>window.clearTimeout(timer);},[]);
   useEffect(() => {
     const focusSearch = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -808,7 +1006,9 @@ export default function FullApiBrowser() {
 
   function applyKind(nextKind:ApiKind){setKind(nextKind);setGroup("全部模块");setSubcategory("全部细分类");setPage(0);setShowComparisonDirectory(false);const first=entries.find(entry=>kindOf(entry)===nextKind);if(first)choose(first);}
   function applyGroup(nextGroup:string){setGroup(nextGroup);setSubcategory("全部细分类");setPage(0);setShowComparisonDirectory(false);}
-  function choose(entry:ApiEntry,syncFilters=false,nextTab:DetailTab="overview"){const next=defaultSpec(entry);if(syncFilters){setKind(kindOf(entry));setGroup(entry.group);setSubcategory(subcategoryOf(entry));setPage(0);}setSelectedName(entry.name);setRemote(null);setDocLoading(true);setSpec(next);setSimError("");setRunState("idle");setRunCount(0);setLastRunAt("");setSim(simulate(entry,next));setDetailTab(nextTab);setShowComparisonDirectory(false);window.setTimeout(()=>document.getElementById("deep-lab")?.scrollIntoView({behavior:"smooth",block:"start"}),0);}
+  function choose(entry:ApiEntry,syncFilters=false,nextTab:DetailTab="overview"){const next=defaultSpec(entry);if(syncFilters){setKind(kindOf(entry));setGroup(entry.group);setSubcategory(subcategoryOf(entry));setPage(0);}setSelectedName(entry.name);setRemote(null);setDocLoading(true);setSpec(next);setSimError("");setRunState("idle");setRunCount(0);setLastRunAt("");setExampleCopied(false);setSim(simulate(entry,next));setDetailTab(nextTab);setShowComparisonDirectory(false);const url=new URL(window.location.href);url.searchParams.set("api",entry.name);window.history.replaceState({},"",url);window.setTimeout(()=>document.getElementById("deep-lab")?.scrollIntoView({behavior:"smooth",block:"start"}),0);}
+  function resetInput(){const next=defaultSpec(selected);setSpec(next);setSim(simulate(selected,next));setSimError("");setRunState("idle");setRunCount(0);setLastRunAt("");}
+  async function copyExample(){try{await navigator.clipboard.writeText(example.code);setExampleCopied(true);window.setTimeout(()=>setExampleCopied(false),1600);}catch{setExampleCopied(false);}}
   function run(){
     setRunState("running"); setSimError("");
     window.setTimeout(()=>{
@@ -822,27 +1022,46 @@ export default function FullApiBrowser() {
   }
 
   return <section className="docs-atlas" id="all-apis">
-    <div className="docs-atlas__intro"><div><p className="eyebrow">PYTORCH 2.13 · API LOOKUP &amp; VISUAL LAB</p><h2>9,066 个接口，按需查询与实验</h2><p>每个条目都提供中文索引、官方链接与学习卡片；高频数值算子展示教学模拟计算，对象、硬件、分布式与编译接口展示处理步骤和状态示意。精确行为请以真实 PyTorch 运行时和官方文档为准。</p></div><div className="docs-atlas__stats"><div><strong>{entries.length.toLocaleString("zh-CN")}</strong><span>官方索引</span></div><div><strong>{groupCounts.length}</strong><span>学习模块</span></div><div><strong>15</strong><span>重点实验</span></div></div></div>
+    <div className="docs-atlas__intro"><div><p className="eyebrow">PYTORCH 2.13 · API LOOKUP &amp; VISUAL LAB</p><h2>9,066 个接口，按需查询与实验</h2><p>每个条目都提供中文索引、官方链接与学习卡片；其中 100 个高频函数经过逐项精读，明确输入、输出、shape、梯度、副作用、适用场景和替代项。其余接口使用函数族的处理步骤和状态示意；精确行为仍以真实 PyTorch 运行时和官方文档为准。</p></div><div className="docs-atlas__stats"><div><strong>{entries.length.toLocaleString("zh-CN")}</strong><span>官方索引</span></div><div><strong>{groupCounts.length}</strong><span>学习模块</span></div><div><strong>{CURATED_FUNCTION_GUIDE_COUNT}</strong><span>函数精读</span></div></div></div>
     <div className="docs-kind-tabs" role="tablist" aria-label="按接口种类浏览">{(["函数","类","方法","其他"] as ApiKind[]).map(name=><button role="tab" aria-selected={kind===name} className={kind===name?"active":""} key={name} onClick={()=>applyKind(name)}><span>{name}</span><b>{kindCounts[name].toLocaleString("zh-CN")}</b></button>)}</div>
-    <div className="docs-toolbar"><label className="docs-search"><span>⌕</span><input ref={searchRef} value={query} onChange={(e)=>{setQuery(e.target.value);setPage(0);}} placeholder={`在${kind}中搜索 Conv2d、backward…`} aria-label={`搜索 PyTorch ${kind}`} /><kbd>/</kbd></label><span className="docs-toolbar__path">{kind} › {group} › {subcategory}</span></div>
+    <div className="docs-toolbar"><label className="docs-search"><span>⌕</span><input ref={searchRef} value={query} onChange={(e)=>{setQuery(e.target.value);setPage(0);}} placeholder="搜索全部接口：torch.topk、梯度、共享存储…" aria-label="搜索全部 PyTorch 接口" /><kbd>/</kbd></label><div className="docs-toolbar__controls"><button type="button" aria-pressed={curatedOnly} className={curatedOnly?"active":""} onClick={()=>{setCuratedOnly(value=>!value);setPage(0);}}>只看 {CURATED_FUNCTION_GUIDE_COUNT} 个人工精读</button><span className="docs-toolbar__path">{isSearching?"全库搜索 · 不受类型与模块筛选限制":`${kind} › ${group} › ${subcategory}`}</span></div></div>
     <nav className="docs-level-one" aria-label="一级模块"><strong>一级模块</strong><div><button className={group==="全部模块"?"active":""} onClick={()=>applyGroup("全部模块")}>全部 <b>{kindCounts[kind]}</b></button>{groupCountsByKind.map(([name,count])=><button key={name} className={group===name?"active":""} onClick={()=>applyGroup(name)}>{name} <b>{count}</b></button>)}</div></nav>
     <nav className="docs-level-two" aria-label="二级细分类"><div className="docs-level-two__label"><strong>二级分类</strong><span>仅显示当前一级模块的分类</span></div><div className="docs-level-two__tabs" role="tablist"><button role="tab" aria-selected={subcategory==="全部细分类"&&!showComparisonDirectory} className={subcategory==="全部细分类"&&!showComparisonDirectory?"active":""} onClick={()=>{setSubcategory("全部细分类");setShowComparisonDirectory(false);setPage(0);}}>全部 <b>{subcategoryCounts.reduce((sum,item)=>sum+item[1],0)}</b></button>{subcategoryCounts.map(([name,count])=><button role="tab" aria-selected={subcategory===name&&!showComparisonDirectory} key={name} className={subcategory===name&&!showComparisonDirectory?"active":""} onClick={()=>{setSubcategory(name);setShowComparisonDirectory(false);setPage(0);}}>{name} <b>{count}</b></button>)}<button role="tab" aria-selected={showComparisonDirectory} className={`comparison-index-link ${showComparisonDirectory?"active":""}`} onClick={()=>setShowComparisonDirectory(true)}>相似方法对比表 <b>{comparisonCatalog.length}</b></button></div></nav>
     {showComparisonDirectory?<ComparisonDirectory selected={selected} onClose={()=>setShowComparisonDirectory(false)} onOpen={(entry,tab)=>choose(entry,true,tab)}/>:<div className="docs-layout">
-      <div className="docs-results"><div className="docs-results__head"><p>找到 <b>{filtered.length.toLocaleString("zh-CN")}</b> 个{kind} <em>{group} › {subcategory}</em></p><span>第 {safePage+1} / {pages} 页</span></div><div className="api-table" role="table"><div className="api-table__header"><span>接口 / 细分类</span><span>类型</span><span>具体做什么</span></div>{visible.map((entry)=><button key={entry.name} className={selected.name===entry.name?"selected":""} onClick={()=>choose(entry)}><div><code>{entry.name}</code><small>{subcategoryOf(entry)}</small></div><span>{entry.typeLabel}</span><p>{operationGuideOf(entry).title}</p></button>)}{!visible.length&&<div className="docs-empty">没有匹配的接口，换个关键词试试。</div>}</div><div className="pagination"><button disabled={safePage===0} onClick={()=>setPage(Math.max(0,safePage-1))}>← 上一页</button><span>{filtered.length?safePage*pageSize+1:0}–{Math.min((safePage+1)*pageSize,filtered.length)} / {filtered.length}</span><button disabled={safePage>=pages-1} onClick={()=>setPage(Math.min(pages-1,safePage+1))}>下一页 →</button></div></div>
+      <div className="docs-results"><div className="docs-results__head"><p>找到 <b>{filtered.length.toLocaleString("zh-CN")}</b> 个{isSearching?"接口":kind} <em>{isSearching?"跨类型与模块搜索":`${group} › ${subcategory}`}{curatedOnly?" › 仅人工精读":""}</em></p><span>第 {safePage+1} / {pages} 页</span></div><div className="api-table" role="table"><div className="api-table__header"><span>接口 / 细分类</span><span>类型</span><span>具体做什么</span></div>{visible.map((entry)=><button key={entry.name} className={selected.name===entry.name?"selected":""} onClick={()=>choose(entry,isSearching)}><div><code>{entry.name}</code><small>{subcategoryOf(entry)}{curatedFunctionGuideOf(entry.name)&&<em> · 人工精读</em>}</small></div><span>{entry.typeLabel}</span><p>{operationGuideOf(entry).title}</p></button>)}{!visible.length&&<div className="docs-empty">没有匹配的接口，换个关键词或关闭“只看人工精读”再试。</div>}</div><div className="pagination"><button disabled={safePage===0} onClick={()=>setPage(Math.max(0,safePage-1))}>← 上一页</button><span>{filtered.length?safePage*pageSize+1:0}–{Math.min((safePage+1)*pageSize,filtered.length)} / {filtered.length}</span><button disabled={safePage>=pages-1} onClick={()=>setPage(Math.min(pages-1,safePage+1))}>下一页 →</button></div></div>
       <aside className="api-inspector"><div className="api-inspector__top"><span>{selected.group}<em> › {subcategoryOf(selected)}</em></span><i>{selected.typeLabel}</i></div><h3>{selected.leaf}</h3><code className="api-inspector__path">{selected.name}</code><section><small>它具体做什么</small><OperationGuidePanel entry={selected} compact /></section><section><small>数学定义 / 处理规则</small><FormulaPanel entry={selected} compact /></section><section><small>应用场景</small><p>{scenarioOf(selected)}</p></section><button className="official-link" type="button" onClick={()=>choose(selected,false,"overview")}>进入本接口标签页 ↓</button></aside>
     </div>}
 
     <article className="deep-lab" id="deep-lab">
-      <header><div><p className="eyebrow">FULL API EXPERIMENT</p><h3>{selected.name}</h3></div><span>{sim.mode}</span></header>
+      <header><div><p className="eyebrow">API QUICK READ &amp; TEACHING LAB</p><h3>{selected.name}</h3></div><span>{tier.label}</span></header>
+      <section className="api-quick-read" aria-labelledby="api-quick-read-title">
+        <div className="api-quick-read__head"><div><small>先看这里，不必先啃完整文档</small><h4 id="api-quick-read-title">30 秒读懂这个接口</h4></div><div className="api-quick-read__badges"><span>{selected.typeLabel}</span><span>{familyLabels[familyOf(selected)]}</span><span>{contract.level}</span></div></div>
+        <div className="api-quick-read__grid">
+          <div><b>怎么调用</b><p>{contract.call}</p></div>
+          <div><b>输入是什么</b><p>{contract.input}</p></div>
+          <div><b>返回什么</b><p>{contract.output}</p></div>
+          <div><b>shape 怎么变</b><p>{contract.shape}</p></div>
+          <div><b>梯度关系</b><p>{contract.autograd}</p></div>
+          <div><b>数据 / 状态副作用</b><p>{operationGuideOf(selected).sideEffect}</p></div>
+        </div>
+        <div className="api-quick-read__pitfall"><b>⚠ 最容易踩的坑</b><p>{contract.pitfall}</p></div>
+        <div className="api-quick-read__check"><b>读完自测：</b><span>我能说出输入吗？</span><span>我能预测输出类型和 shape 吗？</span><span>我知道它会不会改原数据或计算图吗？</span></div>
+      </section>
+      {curated&&<section className="curated-function-guide" aria-label="人工精读补充说明">
+        <div><b>适合什么时候用</b><p>{curated.useWhen}</p></div>
+        <div><b>什么时候先别用</b><p>{curated.avoidWhen}</p></div>
+        <div><b>最小调用骨架</b><code>{curated.example}</code></div>
+        <div className="curated-related"><b>容易混淆的函数 · 点一下直接对比</b>{curated.related.length?<div>{curated.related.map(name=>{const related=entries.find(entry=>entry.name===name);return related?<button type="button" key={name} onClick={()=>choose(related,true,"overview")}>{name} →</button>:<span key={name}>{name}（索引未收录）</span>;})}</div>:<p>没有必须先对比的近邻函数。</p>}</div>
+      </section>}
       <div className="deep-lab-tabs" role="tablist" aria-label="接口详情标签页">{([{id:"overview",label:"介绍与公式"},{id:"usage",label:"调用与变量"},{id:"example",label:"Example 与输入"},{id:"result",label:"计算过程与输出"},...(comparisonOf(selected)?[{id:"compare",label:"相似方法区别"}]:[])] as Array<{id:DetailTab;label:string}>).map(tab=><button role="tab" aria-selected={detailTab===tab.id} className={detailTab===tab.id?"active":""} key={tab.id} onClick={()=>setDetailTab(tab.id)}>{tab.label}</button>)}</div>
       <div className="deep-lab__grid">
         {detailTab==="overview"&&<section className="deep-card deep-card--wide"><small>① 它做什么、怎么算、返回什么</small><OperationGuidePanel entry={selected}/><div className="deep-formula"><span>数学定义 / 明确处理规则</span><FormulaPanel entry={selected} /></div><div className="deep-overview-scenario"><b>什么时候使用</b><p>{scenarioOf(selected)}</p></div></section>}
-        {detailTab==="usage"&&<section className="deep-card deep-card--wide"><small>② 官方调用方法</small>{docLoading?<p className="loading-line">正在读取官方签名…</p>:<><pre><code>{remote?.signature||`${selected.name}(*args, **kwargs)`}</code></pre>{remote?.summary&&<p className="official-summary">官方说明：{remote.summary}</p>}</>}<a href={selected.url} target="_blank" rel="noreferrer">核对官方原文 ↗</a></section>}
-        {detailTab==="usage"&&<section className="deep-card deep-card--wide"><small>③ 参数与变量地图</small><div className="deep-vars">{variablesOf(selected,remote).map((v)=><div key={v.name}><code>{v.name}</code><p>{v.meaning}</p><span>例：{v.sample}</span></div>)}</div></section>}
+        {detailTab==="usage"&&<section className="deep-card deep-card--wide"><small>② 官方调用方法</small>{docLoading?<p className="loading-line">正在读取官方签名；你可以先看上方“30 秒读懂”…</p>:<><pre><code>{cleanSignature(remote?.signature||`${selected.name}（官方签名暂未加载）`)}</code></pre>{remote?.summary&&<p className="official-summary"><b>官方摘要（英文）</b>{remote.summary}</p>}{remote?.error&&<p className="sim-error" role="status">{remote.error}；请用下方官方链接核对。</p>}</>}<a href={selected.url} target="_blank" rel="noreferrer">核对官方原文 ↗</a></section>}
+        {detailTab==="usage"&&<section className="deep-card deep-card--wide"><small>③ 参数与变量地图</small><div className="deep-vars">{variablesOf(selected,remote).map((v)=><div key={`${v.name}-${v.raw}`}><div className="deep-vars__name"><code>{v.name}</code><em className={v.required?"required":"optional"}>{v.name==="result"?"返回说明":v.required?"必填":"可选"}</em></div><p>{v.meaning}</p>{v.raw&&<small>签名片段：<code>{v.raw}</code></small>}<span>默认 / 例：{v.sample}</span></div>)}</div></section>}
         {detailTab==="compare"&&<AlgorithmComparison entry={selected} onSelect={(entry)=>choose(entry,true,"compare")} />}
-        {detailTab==="example"&&<section className="deep-card"><small>④ 使用场景与 Example</small><p>{scenarioOf(selected)}</p><pre><code>{selected.type==="class"?`component = ${selected.name}(...)\noutput = component(input)`:selected.name.startsWith("torch.Tensor.")?`output = input.${selected.leaf}(...)`:`output = ${selected.name}(input, ...)`}</code></pre></section>}
-        {detailTab==="example"&&<section className="deep-card simulator-card"><small>⑤ 输入与执行</small><label><span>实验输入（JSON）</span><textarea value={spec} onChange={(e)=>{setSpec(e.target.value);setRunState("idle");}} spellCheck={false}/></label><button type="button" onClick={run} disabled={runState==="running"}>{runState==="running"?"⏳ 正在执行…":runState==="success"?"✓ 已执行 · 查看计算结果":"▶ 运行本接口实验并打开输出"}</button>{runState==="idle"&&<p className="run-hint">修改输入后运行，将自动切换到“计算过程与输出”。</p>}{simError&&<p className="sim-error" role="alert">{simError}</p>}</section>}
-        {detailTab==="result"&&<section ref={outputRef} className={`deep-card deep-card--wide output-card output-card--${runState}`} aria-live="polite"><small>⑥ 计算过程与最终结果</small><div className="run-receipt"><b>{runState==="running"?"正在计算…":runState==="success"?`运行成功 · 第 ${runCount} 次`:runState==="error"?"运行失败":"示例结果预览"}</b><span>{lastRunAt?`完成时间 ${lastRunAt}`:"可在 Example 与输入标签修改数据"}</span></div><div className="sim-mode"><b>{sim.title}</b><span>{sim.mode} · {sim.mode==="数值计算"||sim.mode==="梯度计算"?"下方展示实际算式、参与运算的单元格与数值":"下方展示张量形状、元素位置与状态变化"}</span></div><CalculationVisualizer key={`${selected.name}-${runCount}`} entry={selected} source={spec} sim={sim} /><div className="trace-row trace-row--compact">{sim.trace.map((step,i)=><div key={`${i}-${step}`}><span>{i+1}</span><p>{step}</p></div>)}</div><div className="result-label">最终结果（精确数据）</div><pre><code>{JSON.stringify(sim.value,null,2)}</code></pre></section>}
+        {detailTab==="example"&&<section className="deep-card"><small>④ {example.title}</small><p>{scenarioOf(selected)}</p><div className="example-meta"><span className={example.runnable?"runnable":"skeleton"}>{example.runnable?"可复制到 Python 运行":"调用骨架，不能直接运行"}</span><button type="button" onClick={copyExample}>{exampleCopied?"✓ 已复制":"复制代码"}</button></div><pre><code>{example.code}</code></pre><div className="example-output"><b>预期输出 / 观察重点</b><pre><code>{example.output}</code></pre></div></section>}
+        {detailTab==="example"&&<section className="deep-card simulator-card"><small>⑤ 网页教学模拟输入</small><p className="simulator-contract"><b>{tier.label}</b> · {tier.note}</p><label><span>页面模拟器的 JSON（不是 Python 函数签名）</span><textarea value={spec} onChange={(e)=>{setSpec(e.target.value);setRunState("idle");}} spellCheck={false}/></label><div className="simulator-actions"><button type="button" className="secondary" onClick={resetInput}>恢复本接口默认输入</button><button type="button" onClick={run} disabled={runState==="running"}>{runState==="running"?"⏳ 正在模拟…":runState==="success"?"✓ 已模拟 · 查看结果":"▶ 运行教学模拟并打开输出"}</button></div>{runState==="idle"&&<p className="run-hint">修改 JSON 后运行，将自动切换到“计算过程与输出”。</p>}{simError&&<p className="sim-error" role="alert">{simError}</p>}</section>}
+        {detailTab==="result"&&<section ref={outputRef} className={`deep-card deep-card--wide output-card output-card--${runState}`} aria-live="polite"><small>⑥ 教学模拟过程与输出</small><div className="run-receipt"><b>{runState==="running"?"正在模拟…":runState==="success"?`模拟完成 · 第 ${runCount} 次`:runState==="error"?"模拟失败":"示例结果预览"}</b><span>{lastRunAt?`完成时间 ${lastRunAt}`:"可在 Example 与输入标签修改 JSON"}</span></div><div className="sim-mode"><b>{sim.title}</b><span>{tier.label} · {tier.note}</span></div><CalculationVisualizer key={`${selected.name}-${runCount}`} entry={selected} source={spec} sim={sim} /><div className="trace-row trace-row--compact">{sim.trace.map((step,i)=><div key={`${i}-${step}`}><span>{i+1}</span><p>{step}</p></div>)}</div><div className="result-label">{tier.numeric?"网页按简化规则算出的结果":"规则 / 流程示意结果"}</div><pre><code>{JSON.stringify(sim.value,null,2)}</code></pre></section>}
       </div>
     </article>
   </section>;

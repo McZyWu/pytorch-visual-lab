@@ -30,14 +30,15 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(beginner, /Tensor/);
   assert.match(beginner, /broadcasting/);
   assert.match(beginner, /真实训练应在 Python \/ PyTorch/);
-  assert.match(browser, /FULL API EXPERIMENT/);
+  assert.match(browser, /API QUICK READ &amp; TEACHING LAB/);
   assert.match(browser, /按需查询与实验/);
   assert.match(browser, /event\.key === "\/"/);
   assert.match(browser, /searchRef\.current\?\.focus/);
-  assert.match(browser, /运行本接口实验/);
+  assert.match(browser, /运行教学模拟并打开输出/);
+  assert.match(browser, /页面模拟器的 JSON（不是 Python 函数签名）/);
   assert.match(browser, /处理步骤和状态示意/);
   assert.doesNotMatch(browser, /结构预演/);
-  assert.match(browser, /运行成功/);
+  assert.match(browser, /模拟完成/);
   assert.match(browser, /aria-live="polite"/);
   assert.match(browser, /链式法则得到梯度/);
   assert.match(browser, /张量计算过程可视化/);
@@ -52,7 +53,21 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(browser, /Conv1d 输出位置/);
   assert.match(browser, /自动播放/);
   assert.match(browser, /输出 Y\[h=\$\{i\},w=\$\{j\}\]/);
-  assert.match(browser, /最终结果/);
+  assert.match(browser, /网页按简化规则算出的结果/);
+  assert.match(browser, /规则 \/ 流程示意结果/);
+  assert.match(browser, /30 秒读懂这个接口/);
+  assert.match(browser, /最容易踩的坑/);
+  assert.match(browser, /我能预测输出类型和 shape 吗/);
+  assert.match(browser, /可复制到 Python 运行/);
+  assert.match(browser, /调用骨架，不能直接运行/);
+  assert.match(browser, /必填/);
+  assert.match(browser, /返回说明/);
+  assert.match(browser, /empty 不是 zeros/);
+  assert.match(browser, /detach 不等于复制/);
+  assert.match(browser, /simulated_available/);
+  assert.match(browser, /searchRank\(a,keyword\)/);
+  assert.match(browser, /url\.searchParams\.set\("api",entry\.name\)/);
+  assert.doesNotMatch(browser, /n\.includes\("zeros"\)\|\|n\.includes\("empty"\)/);
   assert.match(browser, /全部细分类/);
   assert.match(browser, /按接口种类浏览/);
   assert.match(browser, /一级模块/);
@@ -94,4 +109,44 @@ test("includes the full Chinese PyTorch learning experience", async () => {
   assert.match(readme, /## 适合谁/);
   assert.match(readme, /## 教学模拟边界/);
   assert.doesNotMatch(page, /SkeletonPreview|codex-preview/);
+});
+
+test("keeps exactly 100 curated function guides complete and connected to the API index", async () => {
+  const [source, indexSource, browser] = await Promise.all([
+    readFile(new URL("../app/function-guides.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api-index.generated.json", import.meta.url), "utf8"),
+    readFile(new URL("../app/full-api-browser.tsx", import.meta.url), "utf8"),
+  ]);
+  const indexNames = new Set(JSON.parse(indexSource).map((entry) => entry.name));
+  const guideLines = source.split(/\r?\n/).filter((line) => /^\s*guide\("torch\./.test(line));
+  const guideNames = guideLines.map((line) => line.match(/guide\("([^"]+)"/)?.[1]);
+
+  assert.equal(guideNames.length, 100, "the curated audit must cover exactly 100 functions");
+  assert.equal(new Set(guideNames).size, 100, "every curated function must be unique");
+  assert.deepEqual(guideNames.filter((name) => !indexNames.has(name)), [], "every curated function must exist in the generated API index");
+  for (const line of guideLines) {
+    assert.ok(line.length > 180, `guide is too vague: ${line.slice(0, 60)}`);
+    assert.ok((line.match(/"/g) ?? []).length >= 20, `guide is missing a readability field: ${line.slice(0, 60)}`);
+  }
+
+  assert.match(browser, /CURATED_FUNCTION_GUIDE_COUNT/);
+  assert.match(browser, /curatedFunctionGuideOf\(selected\.name\)/);
+  assert.match(browser, /适合什么时候用/);
+  assert.match(browser, /什么时候先别用/);
+  assert.match(browser, /容易混淆的函数/);
+  assert.match(browser, /人工精读/);
+  assert.match(browser, /搜索全部 PyTorch 接口/);
+  assert.match(browser, /全库搜索 · 不受类型与模块筛选限制/);
+  assert.match(browser, /只看 \{CURATED_FUNCTION_GUIDE_COUNT\} 个人工精读/);
+  assert.match(browser, /keyword\?searchable\.includes\(keyword\):browsingScope/);
+  assert.match(browser, /choose\(related,true,"overview"\)/);
+  assert.match(browser, /点一下直接对比/);
+  assert.match(source, /function defaultAutogradOf/);
+  assert.match(source, /新的叶子 Tensor，默认 requires_grad=False/);
+  assert.match(source, /该离散取整操作的反向梯度为 0/);
+  assert.match(source, /转成整数或 bool 会使结果不再需要梯度/);
+  assert.match(source, /function defaultSideEffectOf/);
+  assert.match(source, /新的独立 Tensor 存储/);
+  assert.match(source, /结果通常与输入共享底层存储/);
+  assert.match(source, /不能依赖固定的别名关系/);
 });
