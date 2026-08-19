@@ -22,6 +22,27 @@ type GuideOptions = Partial<Pick<CuratedFunctionGuide, "call" | "autograd" | "si
 const TRACKS_GRADIENT = "浮点或复数输入需要梯度、且该运算可微时，结果会接入 autograd 计算图。";
 const NO_TENSOR_GRADIENT = "它返回 Python 值、索引或运行时状态，本身不产生可反向传播的浮点结果。";
 const NO_MUTATION = "返回新结果，不原地修改输入；但结果是否共享底层存储要看本函数的说明。";
+const FACTORY_NAMES = new Set(["torch.zeros", "torch.ones", "torch.empty", "torch.arange", "torch.linspace", "torch.eye", "torch.rand"]);
+const VIEW_NAMES = new Set(["torch.squeeze", "torch.split", "torch.chunk"]);
+const MAY_COPY_VIEW_NAMES = new Set(["torch.reshape", "torch.flatten", "torch.Tensor.reshape"]);
+
+function defaultAutogradOf(name: string) {
+  if (name === "torch.tensor") return "它从 Python 数据创建新的叶子 Tensor，默认 requires_grad=False；仅在浮点/复数结果上显式设置 requires_grad=True 才会累积梯度，且不会保留源 Tensor 的历史。";
+  if (name === "torch.as_tensor") return "复用已有 Tensor 时可保留它的梯度历史；从 Python/NumPy 数据创建时默认不追踪梯度，dtype/device 转换还可能建立副本。";
+  if (name === "torch.from_numpy") return "返回的 Tensor 默认 requires_grad=False；浮点结果之后可以显式开启梯度，但 NumPy 一侧永远不记录 autograd。";
+  if (FACTORY_NAMES.has(name)) return "没有需要回传梯度的输入；结果默认 requires_grad=False。若接口支持并显式设置 requires_grad=True，浮点/复数结果会成为可训练的叶子 Tensor。";
+  if (["torch.round", "torch.floor", "torch.ceil"].includes(name)) return "浮点输入可以出现在计算图中，但该离散取整操作的反向梯度为 0，不能依靠它学习跨过取整边界。";
+  if (name === "torch.Tensor.to") return "转到浮点/复数 dtype 时通常保留可微关系；转成整数或 bool 会使结果不再需要梯度。";
+  return TRACKS_GRADIENT;
+}
+
+function defaultSideEffectOf(name: string) {
+  if (name === "torch.tensor" || FACTORY_NAMES.has(name)) return "不修改任何输入，并为结果创建新的独立 Tensor 存储。";
+  if (name === "torch.as_tensor") return "不主动修改输入；条件允许时结果会复用输入数据，后续原地写入可能互相影响。";
+  if (VIEW_NAMES.has(name)) return "不修改输入；返回结果通常与输入共享底层存储，之后的原地写入需要谨慎。";
+  if (MAY_COPY_VIEW_NAMES.has(name)) return "不修改输入；结果可能共享存储，也可能因布局不兼容而复制，不能依赖固定的别名关系。";
+  return NO_MUTATION;
+}
 
 function guide(
   name: string,
@@ -49,8 +70,8 @@ function guide(
     related,
     level: options.level ?? "常用",
     call: options.call,
-    autograd: options.autograd ?? TRACKS_GRADIENT,
-    sideEffect: options.sideEffect ?? NO_MUTATION,
+    autograd: options.autograd ?? defaultAutogradOf(name),
+    sideEffect: options.sideEffect ?? defaultSideEffectOf(name),
   };
 }
 
@@ -151,13 +172,13 @@ const guides: CuratedFunctionGuide[] = [
   guide("torch.autograd.grad", "直接计算指定输出对指定输入的梯度并返回", "outputs、inputs、可选 grad_outputs/create_graph/retain_graph/allow_unused。", "与 inputs 对应的梯度元组。", "每个梯度通常与对应 input 同 shape。", "它不会自动写入 .grad；非标量输出通常要提供 grad_outputs，重复高阶求导要理解 create_graph。", "函数式求导、梯度惩罚、雅可比相关计算。", "普通训练只需把叶子参数梯度累积到 .grad。", "(dx,) = torch.autograd.grad(loss, x)", ["torch.Tensor.backward", "torch.autograd.functional.jacobian"], { level: "进阶", sideEffect: "默认返回梯度而不累加到 input.grad；可能释放用于反向的计算图。" }),
   guide("torch.no_grad", "在作用域内关闭反向图记录", "作为 with 上下文或装饰器使用；不接收待计算 Tensor。", "上下文管理器/装饰器；内部表达式仍返回正常结果。", "不直接改变 Tensor shape。", "它不等于 model.eval()；前者控制梯度记录，后者控制 Dropout/BatchNorm 等模块行为。", "推理、参数手工更新或不需要梯度的评估。", "需要后续对作用域内结果反向传播。", "with torch.no_grad():\n    prediction = model(x)", ["torch.enable_grad", "torch.inference_mode"], { level: "入门", call: "作为 `with torch.no_grad():` 或装饰器使用。", autograd: "作用域内新运算通常不进入反向图；工厂函数的 requires_grad 参数有单独规则。", sideEffect: "临时修改当前线程的梯度记录模式，退出作用域后恢复。" }),
   guide("torch.enable_grad", "在外层禁用梯度时临时重新开启记录", "作为 with 上下文或装饰器使用。", "上下文管理器/装饰器。", "不直接改变 Tensor shape。", "只有输入本身允许求导且运算可微时，重新开启记录才会产生有效梯度。", "在 no_grad 环境中的局部训练或敏感性计算。", "整个流程都不需要梯度。", "with torch.enable_grad():\n    loss = model(x).sum()", ["torch.no_grad"], { level: "常用", call: "作为 `with torch.enable_grad():` 或装饰器使用。", autograd: "作用域内恢复 autograd 记录。", sideEffect: "临时修改当前线程的梯度记录模式，退出作用域后恢复。" }),
-  guide("torch.compiler.is_compiling", "查询当前代码是否正由 torch.compile 捕获", "不接收 Tensor；读取当前编译上下文。", "一个 Python bool。", "没有 Tensor shape。", "它适合做兼容分支，但过度依赖编译状态可能让 eager 与 compiled 语义分叉。", "库代码需要在编译捕获期间避开不支持路径。", "只是想判断 CUDA、设备或某个算子是否可用。", "inside_compile = torch.compiler.is_compiling()", ["torch.compile"], { level: "进阶", autograd: NO_TENSOR_GRADIENT, sideEffect: "只读取当前编译上下文，不修改 Tensor 或编译状态。" }),
-  guide("torch.cuda.is_available", "判断当前运行时能否使用 CUDA", "无参数；读取 PyTorch 构建、驱动与当前环境状态。", "一个 Python bool。", "没有 Tensor shape。", "True 也不保证任意分配都成功；显存、设备权限和具体算子仍可能失败。", "选择 cpu/cuda 设备或给出环境提示。", "判断某个 Tensor 当前在哪个设备。", "device = 'cuda' if torch.cuda.is_available() else 'cpu'", ["torch.Tensor.to", "torch.cuda.device_count"], { level: "入门", autograd: NO_TENSOR_GRADIENT, sideEffect: "读取运行时能力，不创建或移动 Tensor。" }),
+  guide("torch.compiler.is_compiling", "查询当前代码是否正由 torch.compile 捕获", "不接收 Tensor；读取当前编译上下文。", "一个 Python bool。", "没有 Tensor shape。", "它适合做兼容分支，但过度依赖编译状态可能让 eager 与 compiled 语义分叉。", "库代码需要在编译捕获期间避开不支持路径。", "只是想判断 CUDA、设备或某个算子是否可用。", "inside_compile = torch.compiler.is_compiling()", ["torch.compile"], { level: "进阶", call: "直接调用 `torch.compiler.is_compiling()`，不传参数。", autograd: NO_TENSOR_GRADIENT, sideEffect: "只读取当前编译上下文，不修改 Tensor 或编译状态。" }),
+  guide("torch.cuda.is_available", "判断当前运行时能否使用 CUDA", "无参数；读取 PyTorch 构建、驱动与当前环境状态。", "一个 Python bool。", "没有 Tensor shape。", "True 也不保证任意分配都成功；显存、设备权限和具体算子仍可能失败。", "选择 cpu/cuda 设备或给出环境提示。", "判断某个 Tensor 当前在哪个设备。", "device = 'cuda' if torch.cuda.is_available() else 'cpu'", ["torch.Tensor.to", "torch.cuda.device_count"], { level: "入门", call: "直接调用 `torch.cuda.is_available()`，不传参数。", autograd: NO_TENSOR_GRADIENT, sideEffect: "读取运行时能力，不创建或移动 Tensor。" }),
   guide("torch.manual_seed", "设置 CPU 及相关设备的默认随机种子", "一个整数 seed。", "一个 Generator 对象。", "没有 Tensor shape。", "相同种子不保证跨平台、跨版本和所有非确定算子得到完全一致结果。", "让实验在同一环境中更容易复现。", "需要彼此独立的多个随机流；应创建单独 Generator。", "torch.manual_seed(42)", ["torch.Generator", "torch.use_deterministic_algorithms"], { level: "入门", autograd: NO_TENSOR_GRADIENT, sideEffect: "重置默认随机数生成器状态，会影响后续随机操作。" }),
   guide("torch.compile", "把 Python/PyTorch 可调用对象优化成可复用的编译版本", "函数或 nn.Module，以及 backend/mode/fullgraph/dynamic 等选项。", "语义等价的可调用对象。", "输出 shape 应与原函数一致，具体由实际输入和函数决定。", "首次调用有编译开销；shape、dtype 或 Python 分支变化可能触发重编译或 graph break。", "热点模型已正确运行，希望提升稳态性能。", "仍在频繁调试副作用、动态 Python 控制流或很短的一次性任务。", "compiled_model = torch.compile(model)", ["torch.compiler.is_compiling", "torch.export.export"], { level: "进阶", autograd: "目标函数中的可微 Tensor 运算仍按原语义参与 autograd。", sideEffect: "会创建编译缓存和守卫，首次运行可能启动后端编译。" }),
   guide("torch.save", "把对象序列化写入文件或文件对象", "要保存的 Python 对象和路径/可写二进制文件。", "返回 None。", "不改变 Tensor shape。", "保存整个 Module 会绑定 Python 类路径；长期模型文件通常优先保存 state_dict。", "保存权重、优化器状态、检查点或 Tensor。", "把不可信对象发送给他人，或需要跨语言通用格式。", "torch.save(model.state_dict(), 'model.pt')", ["torch.load", "torch.nn.Module.state_dict"], { level: "常用", autograd: NO_TENSOR_GRADIENT, sideEffect: "写入或覆盖目标文件/流。" }),
   guide("torch.load", "从文件或文件对象反序列化 PyTorch 数据", "路径/可读文件，以及 map_location、weights_only 等。", "保存时的对象结构或权重数据。", "由文件内容决定。", "不要加载不可信文件；反序列化可能执行恶意代码，并应明确 map_location/weights_only。", "恢复自己或可信来源的检查点和权重。", "文件来源不可信，或需要安全的跨语言数据格式。", "state = torch.load('model.pt', map_location='cpu', weights_only=True)", ["torch.save", "torch.nn.Module.load_state_dict"], { level: "常用", autograd: "加载只恢复数据；是否参与 autograd 取决于数据装入后的使用方式。", sideEffect: "读取文件并创建 Python/Tensor 对象，可能占用大量内存。" }),
-  guide("torch.compiler.reset", "清空 torch.compile 的编译缓存", "通常无参数。", "通常返回 None。", "没有 Tensor shape。", "这是调试/测试工具，不应放进每个训练迭代；清缓存会失去复用收益。", "排查缓存、守卫或重新编译行为。", "正常训练或推理热路径。", "torch.compiler.reset()", ["torch.compile"], { level: "进阶", autograd: NO_TENSOR_GRADIENT, sideEffect: "清理进程内编译缓存，后续调用可能重新编译。" }),
+  guide("torch.compiler.reset", "清空 torch.compile 的编译缓存", "通常无参数。", "通常返回 None。", "没有 Tensor shape。", "这是调试/测试工具，不应放进每个训练迭代；清缓存会失去复用收益。", "排查缓存、守卫或重新编译行为。", "正常训练或推理热路径。", "torch.compiler.reset()", ["torch.compile"], { level: "进阶", call: "直接调用 `torch.compiler.reset()`，不传参数。", autograd: NO_TENSOR_GRADIENT, sideEffect: "清理进程内编译缓存，后续调用可能重新编译。" }),
 
   // 91–100 · 常见 Tensor 方法
   guide("torch.Tensor.clone", "复制 Tensor 数据，同时保留可微关系", "当前 Tensor；可选 memory_format。", "拥有独立存储的新 Tensor。", "与输入相同。", "clone 不是 detach：结果仍连接原计算图；需要独立梯度历史时常用 detach().clone()。", "避免共享存储，又希望梯度仍回传到原 Tensor。", "只想停止梯度，或不需要复制数据。", "y = x.clone()", ["torch.Tensor.detach", "torch.Tensor.contiguous"], { level: "入门", call: "先有 Tensor `x`，再调用 `x.clone()`。", sideEffect: "不修改输入；返回独立存储。" }),

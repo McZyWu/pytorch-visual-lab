@@ -135,4 +135,18 @@ test("keeps exactly 100 curated function guides complete and connected to the AP
   assert.match(browser, /什么时候先别用/);
   assert.match(browser, /容易混淆的函数/);
   assert.match(browser, /人工精读/);
+  assert.match(browser, /搜索全部 PyTorch 接口/);
+  assert.match(browser, /全库搜索 · 不受类型与模块筛选限制/);
+  assert.match(browser, /只看 \{CURATED_FUNCTION_GUIDE_COUNT\} 个人工精读/);
+  assert.match(browser, /keyword\?searchable\.includes\(keyword\):browsingScope/);
+  assert.match(browser, /choose\(related,true,"overview"\)/);
+  assert.match(browser, /点一下直接对比/);
+  assert.match(source, /function defaultAutogradOf/);
+  assert.match(source, /新的叶子 Tensor，默认 requires_grad=False/);
+  assert.match(source, /该离散取整操作的反向梯度为 0/);
+  assert.match(source, /转成整数或 bool 会使结果不再需要梯度/);
+  assert.match(source, /function defaultSideEffectOf/);
+  assert.match(source, /新的独立 Tensor 存储/);
+  assert.match(source, /结果通常与输入共享底层存储/);
+  assert.match(source, /不能依赖固定的别名关系/);
 });
